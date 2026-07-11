@@ -1,112 +1,231 @@
 """
-Intent Engine — Comprend ce que veut VRAIMENT l'utilisateur.
-Remplace l'ancien ai.py
+Intent Engine — Compréhension de la requête voyageur
 """
 
-import os, json, httpx
-from datetime import date, timedelta
-from engine.core.trip import Trip, TripIntent, TripContext
+import json
+import os
+import httpx
+from typing import Dict, Any, Optional
 
-DEEPSEEK_KEY = os.getenv("DEEPSEEK_KEY")
+# Clé API DeepSeek (optionnelle)
+DEEPSEEK_KEY = os.getenv("DEEPSEEK_KEY", "")
+DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 
-async def parse_intent(query: str) -> Trip:
-    """Parse la requête et retourne un objet Trip complet."""
-    trip = Trip(raw_query=query)
+async def understand_intent(query: str, overrides: Dict[str, Any] = None) -> Dict[str, Any]:
+    """
+    Analyse la requête pour extraire l'intention du voyageur
     
-    if DEEPSEEK_KEY and "sk-votre" not in DEEPSEEK_KEY:
+    Args:
+        query: Requête textuelle de l'utilisateur
+        overrides: Paramètres de surcharge (trip_type, budget, etc.)
+    
+    Returns:
+        Dict contenant:
+            - trip_type: business, romantic, family, backpacker, leisure
+            - destination: nom de la ville
+            - budget: budget estimé
+            - currency: devise
+            - lat: latitude estimée
+            - lng: longitude estimée
+            - must_have: liste des équipements souhaités
+            - checkin: date d'arrivée (YYYY-MM-DD)
+            - checkout: date de départ (YYYY-MM-DD)
+            - adults: nombre d'adultes
+    """
+    
+    # ===== 1. Utiliser les overrides s'ils existent =====
+    if overrides:
+        result = {
+            "trip_type": overrides.get("trip_type", "leisure"),
+            "destination": overrides.get("destination", "Paris"),
+            "budget": overrides.get("budget", 300),
+            "currency": overrides.get("currency", "EUR"),
+            "lat": overrides.get("lat", 48.8566),
+            "lng": overrides.get("lng", 2.3522),
+            "must_have": [],
+            "checkin": overrides.get("checkin", "2026-07-15"),
+            "checkout": overrides.get("checkout", "2026-07-20"),
+            "adults": overrides.get("adults", 2),
+            "raw_query": query
+        }
+        
+        # Ajuster les must_have selon le type de voyage
+        if result["trip_type"] == "romantic":
+            result["must_have"] = ["spa", "vue", "restaurant gastronomique"]
+        elif result["trip_type"] == "business":
+            result["must_have"] = ["wifi haut débit", "business center", "calme"]
+        elif result["trip_type"] == "family":
+            result["must_have"] = ["piscine", "chambre familiale", "club enfants"]
+        elif result["trip_type"] == "backpacker":
+            result["must_have"] = ["wifi gratuit", "bagagerie", "ambiance sociale"]
+        else:  # leisure
+            result["must_have"] = ["wifi", "petit-déjeuner", "climatisation"]
+            
+        return result
+    
+    # ===== 2. Utiliser DeepSeek si disponible =====
+    if DEEPSEEK_KEY:
         try:
-            result = await _deepseek_intent(query)
-            if result:
-                trip = _build_trip_from_intent(result, query)
-                return trip
+            return await _analyze_with_deepseek(query)
         except Exception as e:
-            print(f"DeepSeek error: {e}")
+            print(f"Erreur DeepSeek: {e}, fallback sur l'analyse basique")
     
-    # Fallback
-    return _basic_trip(query)
+    # ===== 3. Fallback : Analyse basique =====
+    return _analyze_basic(query)
 
 
-async def _deepseek_intent(query: str) -> dict:
-    today = date.today().isoformat()
-    system = f"""Tu es un moteur d'analyse de voyage. Retourne UNIQUEMENT ce JSON :
-{{
-  "intent": {{
-    "trip_type": "business",
-    "goal": "conference",
-    "must_have": ["wifi", "metro"],
-    "nice_to_have": ["gym"],
-    "avoid": ["nightlife", "noisy"]
-  }},
-  "context": {{
-    "event": "La Défense",
-    "event_lat": 48.8923,
-    "event_lng": 2.2392,
-    "family": null,
-    "family_lat": null,
-    "family_lng": null,
-    "checkin": "2026-07-15",
-    "checkout": "2026-07-17",
-    "adults": 1,
-    "currency": "EUR",
-    "budget": 150
-  }},
-  "suggested_activities": ["coworking", "restaurant affaires"]
-}}
-Aujourd'hui = {today}. Calcule les dates à partir d'aujourd'hui.
-Détecte la devise (USD, EUR, GBP).
-Détecte le nombre d'adultes et enfants.
-Suggère des activités selon le type de voyage."""
-
-    async with httpx.AsyncClient(timeout=15) as c:
-        r = await c.post("https://api.deepseek.com/chat/completions",
-            json={"model": "deepseek-chat", "messages": [{"role": "system", "content": system}, {"role": "user", "content": query}], "temperature": 0.1, "max_tokens": 500},
-            headers={"Authorization": f"Bearer {DEEPSEEK_KEY}"}
+async def _analyze_with_deepseek(query: str) -> Dict[str, Any]:
+    """Analyse la requête avec DeepSeek API"""
+    async with httpx.AsyncClient(timeout=30) as client:
+        response = await client.post(
+            DEEPSEEK_URL,
+            headers={
+                "Authorization": f"Bearer {DEEPSEEK_KEY}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "deepseek-chat",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": """Tu es un assistant spécialisé dans l'analyse de requêtes touristiques.
+                        Extrais les informations suivantes au format JSON:
+                        {
+                            "trip_type": "business|romantic|family|backpacker|leisure",
+                            "destination": "nom de la ville",
+                            "budget": budget estimé (nombre, en euros),
+                            "currency": "EUR|USD|GBP",
+                            "lat": latitude (nombre),
+                            "lng": longitude (nombre),
+                            "must_have": ["liste", "des", "équipements", "souhaités"],
+                            "checkin": "YYYY-MM-DD",
+                            "checkout": "YYYY-MM-DD",
+                            "adults": nombre (entier)
+                        }
+                        Réponds UNIQUEMENT avec le JSON, sans autre texte."""
+                    },
+                    {
+                        "role": "user",
+                        "content": query
+                    }
+                ],
+                "temperature": 0.1,
+                "max_tokens": 500
+            }
         )
-    if r.status_code != 200: return {}
-    content = r.json()["choices"][0]["message"]["content"].strip()
-    if content.startswith("```"): content = content.split("\n", 1)[1].rsplit("```", 1)[0]
-    try: return json.loads(content)
-    except: return {}
+        
+        if response.status_code != 200:
+            raise Exception(f"DeepSeek API error: {response.status_code}")
+        
+        data = response.json()
+        content = data["choices"][0]["message"]["content"]
+        
+        # Extraire le JSON de la réponse
+        import re
+        json_match = re.search(r'\{.*\}', content, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group())
+            result["raw_query"] = query
+            return result
+        
+        raise Exception("Aucun JSON trouvé dans la réponse")
 
 
-def _build_trip_from_intent(data: dict, query: str) -> Trip:
-    intent_data = data.get("intent", {})
-    context_data = data.get("context", {})
+def _analyze_basic(query: str) -> Dict[str, Any]:
+    """Analyse basique sans API externe"""
+    result = {
+        "trip_type": "leisure",
+        "destination": "Paris",
+        "budget": 300,
+        "currency": "EUR",
+        "lat": 48.8566,
+        "lng": 2.3522,
+        "must_have": ["wifi", "petit-déjeuner", "climatisation"],
+        "checkin": "2026-07-15",
+        "checkout": "2026-07-20",
+        "adults": 2,
+        "raw_query": query
+    }
     
-    trip = Trip(
-        raw_query=query,
-        intent=TripIntent(
-            trip_type=intent_data.get("trip_type", "leisure"),
-            goal=intent_data.get("goal", ""),
-            must_have=intent_data.get("must_have", []),
-            nice_to_have=intent_data.get("nice_to_have", []),
-            avoid=intent_data.get("avoid", [])
-        ),
-        context=TripContext(
-            event=context_data.get("event", "Paris"),
-            event_lat=context_data.get("event_lat", 48.8566),
-            event_lng=context_data.get("event_lng", 2.3522),
-            family=context_data.get("family"),
-            checkin=context_data.get("checkin", (date.today() + timedelta(days=7)).isoformat()),
-            checkout=context_data.get("checkout", (date.today() + timedelta(days=9)).isoformat()),
-            adults=context_data.get("adults", 1),
-            currency=context_data.get("currency", "EUR"),
-            budget=context_data.get("budget", 200)
-        ),
-        suggested_activities=data.get("suggested_activities", [])
-    )
-    return trip
+    # Détection basique du type de voyage
+    query_lower = query.lower()
+    
+    if any(word in query_lower for word in ["affaires", "business", "conférence", "réunion", "travail"]):
+        result["trip_type"] = "business"
+        result["must_have"] = ["wifi haut débit", "business center", "calme"]
+        
+    elif any(word in query_lower for word in ["romantique", "couple", "amoureux", "lune de miel"]):
+        result["trip_type"] = "romantic"
+        result["must_have"] = ["spa", "vue", "restaurant gastronomique"]
+        
+    elif any(word in query_lower for word in ["famille", "enfant", "enfants", "familial"]):
+        result["trip_type"] = "family"
+        result["must_have"] = ["piscine", "chambre familiale", "club enfants"]
+        
+    elif any(word in query_lower for word in ["backpacker", "auberge", "jeunesse", "pas cher"]):
+        result["trip_type"] = "backpacker"
+        result["budget"] = 50
+        result["must_have"] = ["wifi gratuit", "bagagerie", "ambiance sociale"]
+    
+    # Détection de la destination
+    cities = {
+        "paris": (48.8566, 2.3522),
+        "londres": (51.5074, -0.1278),
+        "new york": (40.7128, -74.0060),
+        "barcelone": (41.3851, 2.1734),
+        "rome": (41.9028, 12.4964),
+        "berlin": (52.5200, 13.4050),
+        "amsterdam": (52.3676, 4.9041),
+        "bruxelles": (50.8503, 4.3517),
+        "marseille": (43.2965, 5.3698),
+        "lyon": (45.7640, 4.8357)
+    }
+    
+    for city, (lat, lng) in cities.items():
+        if city in query_lower:
+            result["destination"] = city.capitalize()
+            result["lat"] = lat
+            result["lng"] = lng
+            break
+    
+    # Détection du budget
+    import re
+    budget_matches = re.findall(r'(\d+)[\s-]*€', query_lower)
+    if budget_matches:
+        result["budget"] = int(budget_matches[0])
+    
+    # Détection des dates
+    date_matches = re.findall(r'(\d{1,2})\s*(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s*(\d{4})', query_lower)
+    if date_matches:
+        months = {"janvier": "01", "février": "02", "mars": "03", "avril": "04", "mai": "05", "juin": "06",
+                  "juillet": "07", "août": "08", "septembre": "09", "octobre": "10", "novembre": "11", "décembre": "12"}
+        day, month, year = date_matches[0]
+        result["checkin"] = f"{year}-{months[month]}-{day.zfill(2)}"
+    
+    return result
 
 
-def _basic_trip(query: str) -> Trip:
-    today = date.today().isoformat()
-    return Trip(
-        raw_query=query,
-        intent=TripIntent(),
-        context=TripContext(
-            event="Paris", event_lat=48.8566, event_lng=2.3522,
-            checkin=(date.fromisoformat(today) + timedelta(days=7)).isoformat(),
-            checkout=(date.fromisoformat(today) + timedelta(days=9)).isoformat()
-        )
-    )
+def extract_amenities(text: str) -> list:
+    """Extrait les équipements souhaités d'un texte"""
+    amenities_keywords = {
+        "wifi": ["wifi", "internet", "connexion"],
+        "piscine": ["piscine", "pool", "bassin"],
+        "spa": ["spa", "bien-être", "massage", "sauna"],
+        "restaurant": ["restaurant", "gastronomique", "dîner"],
+        "parking": ["parking", "stationnement", "garage"],
+        "vue": ["vue", "balcon", "terrasse", "panorama"],
+        "calme": ["calme", "silencieux", "tranquille"],
+        "climatisation": ["climatisation", "air conditionné", "clim"],
+        "petit-déjeuner": ["petit-déjeuner", "breakfast", "brunch"],
+        "business": ["business center", "salle de réunion", "coworking"],
+        "familial": ["chambre familiale", "club enfants", "babysitting"]
+    }
+    
+    text_lower = text.lower()
+    found = []
+    for amenity, keywords in amenities_keywords.items():
+        if any(kw in text_lower for kw in keywords):
+            found.append(amenity)
+    
+    return found
