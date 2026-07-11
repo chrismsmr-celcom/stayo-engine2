@@ -1,0 +1,15 @@
+{
+  "type": "family",
+  "rules": [
+    {"condition": "trip_type == 'family'", "action": "boost_safety", "value": 2.0},
+    {"condition": "trip_type == 'family'", "action": "require_family_room", "value": true},
+    {"condition": "children > 0", "action": "prefer_pool", "value": true}
+  ],
+  "questions": [
+    "Quel age ont vos enfants ?",
+    "Avez-vous besoin d'un lit bebe ?",
+    "Quelles activites familiales recherchez-vous ?"
+  ],
+  "common_amenities": ["family room", "pool", "restaurant", "parking", "kids activities"],
+  "avoid": ["adults only", "nightclub", "casino"]
+}

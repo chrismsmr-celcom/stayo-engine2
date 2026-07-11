@@ -1,0 +1,15 @@
+{
+  "type": "romantic",
+  "rules": [
+    {"condition": "trip_type == 'romantic'", "action": "boost_comfort", "value": 2.0},
+    {"condition": "trip_type == 'romantic'", "action": "prefer_view", "value": true},
+    {"condition": "trip_type == 'romantic'", "action": "prefer_spa", "value": true}
+  ],
+  "questions": [
+    "Celebrez-vous une occasion speciale ?",
+    "Preferez-vous un hotel boutique ou un grand resort ?",
+    "Souhaitez-vous des recommandations de restaurants romantiques ?"
+  ],
+  "common_amenities": ["spa", "restaurant", "bar", "view", "balcony", "room service"],
+  "avoid": ["family friendly", "kids club", "business center"]
+}

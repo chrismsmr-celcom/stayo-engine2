@@ -1,0 +1,15 @@
+{
+  "type": "business",
+  "rules": [
+    {"condition": "trip_type == 'business'", "action": "boost_transport", "value": 1.5},
+    {"condition": "trip_type == 'business'", "action": "require_wifi", "value": true},
+    {"condition": "trip_type == 'business'", "action": "prefer_quiet", "value": true}
+  ],
+  "questions": [
+    "Avez-vous besoin d'une salle de reunion ?",
+    "Quelle est la distance maximale de votre lieu de rendez-vous ?",
+    "Prevoyez-vous de travailler depuis l'hotel ?"
+  ],
+  "common_amenities": ["wifi", "business center", "meeting room", "breakfast", "airport shuttle"],
+  "avoid": ["nightclub", "noisy area", "tourist area"]
+}
