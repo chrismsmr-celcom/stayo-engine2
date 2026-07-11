@@ -1,5 +1,5 @@
 """
-STAYO Engines
+STAYO Engines - Modules de traitement
 """
 
 from engine.engines.recommend import recommend
