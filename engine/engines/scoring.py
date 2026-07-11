@@ -1,140 +1,452 @@
 """
-Scoring Engine — Score modulaire par catégorie.
-Chaque catégorie est indépendante et pondérée selon le type de voyage.
+STAYO Scoring Engine
+Version 2.0
 """
 
 from engine.core.trip import Trip
 
 
 class ScoredHotel:
-    def __init__(self, hotel: dict):
+
+    def __init__(self, hotel):
+
         self.hotel = hotel
+
         self.scores = {}
+
         self.total = 0
+
         self.confidence = 100
+
         self.reasons = []
+
         self.warnings = []
 
 
-def score_hotels(trip: Trip, hotels: list) -> list:
-    """Calcule les scores modulaires pour chaque hôtel."""
-    scored = []
-    
+# ----------------------------------------------------
+# PUBLIC
+# ----------------------------------------------------
+
+def score_hotels(trip: Trip, hotels: list):
+
+    results = []
+
+    trip_type = trip.context.trip_type or "leisure"
+
+    weights = _weights(trip_type)
+
     for hotel in hotels:
+
         sh = ScoredHotel(hotel)
-        
-        # Modules de scoring indépendants
-        sh.scores["location"] = _location_score(hotel, trip)
-        sh.scores["price"] = _price_score(hotel, trip)
-        sh.scores["quality"] = _quality_score(hotel)
-        sh.scores["amenities"] = _amenities_score(hotel, trip)
-        sh.scores["transport"] = _transport_score(hotel, trip)
-        sh.scores["lifestyle"] = _lifestyle_score(hotel, trip)
-        
-        # Pondération selon le type de voyage
-        weights = _get_weights(trip.intent.trip_type)
-        
-        sh.total = round(sum(sh.scores[k] * weights.get(k, 1) for k in sh.scores) / sum(weights.values()), 1)
-        sh.confidence = _calculate_confidence(trip, sh)
-        
-        sh.hotel["score"] = sh.total
-        sh.hotel["confidence"] = sh.confidence
-        sh.hotel["score_details"] = sh.scores
-        sh.hotel["reasons"] = sh.reasons
-        sh.hotel["warnings"] = sh.warnings
-        
-        scored.append(sh.hotel)
-    
-    scored.sort(key=lambda x: x["score"], reverse=True)
-    return scored
+
+        sh.scores["location"] = _location_score(hotel, trip, sh)
+
+        sh.scores["price"] = _price_score(hotel, trip, sh)
+
+        sh.scores["quality"] = _quality_score(hotel, sh)
+
+        sh.scores["preferences"] = _preferences_score(hotel, trip, sh)
+
+        sh.scores["transport"] = _transport_score(hotel, sh)
+
+        sh.scores["trip"] = _trip_score(hotel, trip, sh)
+
+        weighted = 0
+
+        total_weight = 0
+
+        for key, value in sh.scores.items():
+
+            w = weights.get(key, 1)
+
+            weighted += value * w
+
+            total_weight += w
+
+        sh.total = round(weighted / total_weight, 1)
+
+        sh.confidence = _confidence(trip, hotel)
+
+        hotel["score"] = sh.total
+
+        hotel["confidence"] = sh.confidence
+
+        hotel["score_details"] = sh.scores
+
+        hotel["reasons"] = sh.reasons
+
+        hotel["warnings"] = sh.warnings
+
+        results.append(hotel)
+
+    results.sort(
+
+        key=lambda x: (
+
+            x["score"],
+
+            x["confidence"],
+
+            x.get("rating", 0)
+
+        ),
+
+        reverse=True
+
+    )
+
+    return results
 
 
-def _location_score(hotel, trip):
-    dist = hotel.get("distance_event_minutes", 999)
-    if dist <= 5: return 100
-    if dist <= 10: return 90
-    if dist <= 15: return 75
-    if dist <= 20: return 55
-    if dist <= 30: return 35
-    return 10
+# ----------------------------------------------------
+# SCORES
+# ----------------------------------------------------
+
+def _location_score(hotel, trip, sh):
+
+    minutes = hotel.get("distance_event_minutes", 999)
+
+    if minutes <= 5:
+
+        sh.reasons.append("À moins de 5 min du lieu principal")
+
+        return 100
+
+    if minutes <= 10:
+
+        sh.reasons.append("Très proche de votre destination")
+
+        return 90
+
+    if minutes <= 20:
+
+        return 75
+
+    if minutes <= 30:
+
+        sh.warnings.append("Temps de trajet moyen")
+
+        return 55
+
+    sh.warnings.append("Éloigné de votre destination")
+
+    return 25
 
 
-def _price_score(hotel, trip):
+def _price_score(hotel, trip, sh):
+
     price = hotel.get("price")
+
     budget = trip.context.budget
-    if price is None: return 50
-    if price <= budget * 0.5: return 100
-    if price <= budget * 0.8: return 90
-    if price <= budget: return 80
-    if price <= budget * 1.3: return 50
-    return 10
+
+    if price is None:
+
+        sh.warnings.append("Prix indisponible")
+
+        return 50
+
+    if budget is None:
+
+        return 70
+
+    ratio = price / budget
+
+    if ratio <= 0.6:
+
+        sh.reasons.append("Excellent rapport qualité/prix")
+
+        return 100
+
+    if ratio <= 0.8:
+
+        return 90
+
+    if ratio <= 1:
+
+        return 80
+
+    if ratio <= 1.2:
+
+        return 65
+
+    sh.warnings.append("Au-dessus du budget")
+
+    return 30
 
 
-def _quality_score(hotel):
+def _quality_score(hotel, sh):
+
     rating = hotel.get("rating", 0)
+
     reviews = hotel.get("reviewCount", 0)
-    base = rating * 10
-    if reviews > 1000: base += 10
-    elif reviews > 100: base += 5
-    return min(100, base)
+
+    score = rating * 18
+
+    if reviews > 1000:
+
+        score += 10
+
+    elif reviews > 300:
+
+        score += 5
+
+    if rating >= 4.5:
+
+        sh.reasons.append("Très bien noté par les voyageurs")
+
+    return min(score, 100)
 
 
-def _amenities_score(hotel, trip):
-    facilities = [f.lower() for f in hotel.get("hotelFacilities", [])]
+def _preferences_score(hotel, trip, sh):
+
+    prefs = [p.lower() for p in trip.context.preferences]
+
+    facilities = [
+
+        f.lower()
+
+        for f in hotel.get("hotelFacilities", [])
+
+    ]
+
+    if not prefs:
+
+        return 70
+
+    score = 60
+
+    for pref in prefs:
+
+        if any(pref in f for f in facilities):
+
+            score += 10
+
+            sh.reasons.append(f"{pref} disponible")
+
+        else:
+
+            score -= 5
+
+    return max(0, min(score, 100))
+
+
+def _transport_score(hotel, sh):
+
     score = 50
-    must = [m.lower() for m in trip.intent.must_have]
-    for m in must:
-        if any(m in f for f in facilities): score += 15
-        else: score -= 10
-    nice = [n.lower() for n in trip.intent.nice_to_have]
-    for n in nice:
-        if any(n in f for f in facilities): score += 5
-    return max(0, min(100, score))
+
+    facilities = [
+
+        f.lower()
+
+        for f in hotel.get("hotelFacilities", [])
+
+    ]
+
+    keywords = {
+
+        "metro":15,
+
+        "subway":15,
+
+        "bus":10,
+
+        "parking":10,
+
+        "airport":10,
+
+        "shuttle":10
+
+    }
+
+    for k, pts in keywords.items():
+
+        if any(k in f for f in facilities):
+
+            score += pts
+
+    return min(score,100)
 
 
-def _transport_score(hotel, trip):
-    facilities = [f.lower() for f in hotel.get("hotelFacilities", [])]
-    score = 30
-    if any("metro" in f or "subway" in f for f in facilities): score += 25
-    if any("bus" in f for f in facilities): score += 15
-    if any("parking" in f for f in facilities): score += 15
-    if any("airport" in f or "shuttle" in f for f in facilities): score += 15
-    return min(100, score)
+def _trip_score(hotel, trip, sh):
 
+    facilities = [
 
-def _lifestyle_score(hotel, trip):
-    facilities = [f.lower() for f in hotel.get("hotelFacilities", [])]
+        f.lower()
+
+        for f in hotel.get("hotelFacilities", [])
+
+    ]
+
     score = 50
-    if trip.intent.trip_type == "business":
-        if any("wifi" in f or "internet" in f for f in facilities): score += 20
-        if any("business" in f or "meeting" in f for f in facilities): score += 15
-        if any("restaurant" in f for f in facilities): score += 15
-    elif trip.intent.trip_type == "romantic":
-        if any("spa" in f or "sauna" in f for f in facilities): score += 25
-        if any("restaurant" in f or "bar" in f for f in facilities): score += 15
-        if any("view" in f or "vue" in f for f in facilities): score += 10
-    elif trip.intent.trip_type == "family":
-        if any("pool" in f or "piscine" in f for f in facilities): score += 20
-        if any("family" in f or "enfant" in f for f in facilities): score += 20
-        if any("restaurant" in f for f in facilities): score += 10
-    return min(100, score)
+
+    trip_type = trip.context.trip_type
+
+    if trip_type == "business":
+
+        if any("wifi" in f for f in facilities):
+
+            score += 20
+
+        if any("business" in f for f in facilities):
+
+            score += 15
+
+        if any("meeting" in f for f in facilities):
+
+            score += 15
+
+    elif trip_type == "romantic":
+
+        if any("spa" in f for f in facilities):
+
+            score += 20
+
+        if any("restaurant" in f for f in facilities):
+
+            score += 15
+
+        if any("bar" in f for f in facilities):
+
+            score += 10
+
+    elif trip_type == "family":
+
+        if any("pool" in f for f in facilities):
+
+            score += 20
+
+        if any("family" in f for f in facilities):
+
+            score += 20
+
+        if any("kids" in f for f in facilities):
+
+            score += 10
+
+    return min(score,100)
 
 
-def _get_weights(trip_type):
+# ----------------------------------------------------
+# WEIGHTS
+# ----------------------------------------------------
+
+def _weights(trip_type):
+
     return {
-        "business": {"location": 3, "price": 1.5, "quality": 1, "amenities": 2.5, "transport": 2.5, "lifestyle": 2},
-        "romantic": {"location": 1, "price": 1, "quality": 2.5, "amenities": 2, "transport": 1, "lifestyle": 3},
-        "family": {"location": 2, "price": 2, "quality": 1.5, "amenities": 2.5, "transport": 1.5, "lifestyle": 2.5},
-        "backpacker": {"location": 1.5, "price": 3.5, "quality": 0.5, "amenities": 0.5, "transport": 2, "lifestyle": 1},
-        "leisure": {"location": 2, "price": 2, "quality": 2, "amenities": 1.5, "transport": 1.5, "lifestyle": 2}
-    }.get(trip_type, {"location": 2, "price": 1.5, "quality": 1.5, "amenities": 1.5, "transport": 1.5, "lifestyle": 1.5})
+
+        "business":{
+
+            "location":3,
+
+            "price":1.5,
+
+            "quality":1.5,
+
+            "preferences":2.5,
+
+            "transport":2.5,
+
+            "trip":3
+
+        },
+
+        "romantic":{
+
+            "location":1.5,
+
+            "price":1,
+
+            "quality":2,
+
+            "preferences":2,
+
+            "transport":1,
+
+            "trip":3
+
+        },
+
+        "family":{
+
+            "location":2,
+
+            "price":2,
+
+            "quality":1.5,
+
+            "preferences":2,
+
+            "transport":1.5,
+
+            "trip":3
+
+        },
+
+        "backpacker":{
+
+            "location":2,
+
+            "price":4,
+
+            "quality":1,
+
+            "preferences":1,
+
+            "transport":2,
+
+            "trip":1
+
+        }
+
+    }.get(
+
+        trip_type,
+
+        {
+
+            "location":2,
+
+            "price":2,
+
+            "quality":2,
+
+            "preferences":2,
+
+            "transport":2,
+
+            "trip":2
+
+        }
+
+    )
 
 
-def _calculate_confidence(trip, scored):
-    conf = 100
-    if not trip.context.budget: conf -= 15
-    if not trip.context.event: conf -= 20
-    if scored.hotel.get("price") is None: conf -= 20
-    if scored.hotel.get("rating", 0) == 0: conf -= 10
-    if len(scored.reasons) < 2: conf -= 10
-    return max(0, min(100, conf))
+# ----------------------------------------------------
+# CONFIDENCE
+# ----------------------------------------------------
+
+def _confidence(trip, hotel):
+
+    score = 100
+
+    if trip.context.budget is None:
+
+        score -= 10
+
+    if trip.context.event_lat is None:
+
+        score -= 20
+
+    if hotel.get("price") is None:
+
+        score -= 20
+
+    if hotel.get("rating") is None:
+
+        score -= 10
+
+    if hotel.get("distance_event_minutes") is None:
+
+        score -= 20
+
+    return max(0, score)
