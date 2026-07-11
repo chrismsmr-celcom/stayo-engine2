@@ -229,3 +229,35 @@ def extract_amenities(text: str) -> list:
             found.append(amenity)
     
     return found
+    from engine.core.trip import Trip
+
+
+async def parse_intent(query: str, traveler_id: str = None) -> Trip:
+    """
+    Transforme une requête utilisateur en objet Trip.
+    """
+    intent = await understand_intent(query)
+
+    trip = Trip(
+        raw_query=query,
+        traveler_id=traveler_id
+    )
+
+    # Context
+    trip.context.trip_type = intent.get("trip_type")
+    trip.context.destination = intent.get("destination")
+
+    trip.context.event_lat = intent.get("lat")
+    trip.context.event_lng = intent.get("lng")
+
+    trip.context.budget = intent.get("budget")
+    trip.context.currency = intent.get("currency")
+
+    trip.context.checkin = intent.get("checkin")
+    trip.context.checkout = intent.get("checkout")
+
+    trip.context.adults = intent.get("adults")
+
+    trip.context.must_have = intent.get("must_have", [])
+
+    return trip
