@@ -10,6 +10,7 @@ from typing import Optional
 import logging
 import uvicorn
 import os
+import httpx
 
 from engine.engines.recommend import recommend
 from engine.engines.traveller import get_profile
@@ -202,7 +203,7 @@ async def recommend_endpoint(request: SearchRequest):
 async def fetch_hotel_details(hotel_id: str):
     """Récupère les détails d'un hôtel depuis LiteAPI"""
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
+        async with httpx.AsyncClient(timeout=10) as client:  # ← httpx maintenant défini
             response = await client.get(
                 f"https://api.liteapi.travel/v3.0/data/hotel",
                 params={"hotelId": hotel_id, "language": "fr"},
