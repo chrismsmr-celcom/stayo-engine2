@@ -1,6 +1,5 @@
 """
 models.py - Schémas Pydantic pour l'Intent Engine
-Validation stricte des données
 """
 
 from pydantic import BaseModel, Field, field_validator
@@ -39,29 +38,22 @@ class IntentSchema(BaseModel):
                 if date.fromisoformat(v) < date.fromisoformat(checkin_val):
                     raise ValueError("La date de départ doit être après la date d'arrivée.")
             except (ValueError, TypeError):
-                pass  # Ignorer si le format n'est pas ISO
+                pass
         return v
     
     @field_validator('trip_type')
     @classmethod
     def validate_trip_type(cls, v):
-        """Valide le type de voyage"""
         valid_types = ["business", "romantic", "family", "backpacker", "luxury", "leisure"]
-        if v not in valid_types:
-            return "leisure"
-        return v
+        return v if v in valid_types else "leisure"
     
     @field_validator('vibe')
     @classmethod
     def validate_vibe(cls, v):
-        """Valide le vibe"""
         valid_vibes = ["luxe", "confort", "budget", "design", "familial", "romantique", "professionnel", "décontracté"]
-        if v not in valid_vibes:
-            return "confort"
-        return v
+        return v if v in valid_vibes else "confort"
     
     class Config:
-        """Configuration Pydantic"""
         json_schema_extra = {
             "example": {
                 "trip_type": "family",
