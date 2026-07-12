@@ -134,99 +134,88 @@ async def health():
 
 @app.post("/recommend")
 async def recommend_endpoint(request: SearchRequest):
-
     try:
-
-        logger.info(
-            f"New recommendation request : {request.query}"
-        )
-
-
+        logger.info(f"New recommendation request : {request.query}")
+        
+        # Appel du moteur de recommandation
         result = await recommend(
-
             query=request.query,
-
-            traveler_id=request.traveler_id
-
+            traveler_id=request.traveler_id,
+            overrides={
+                "trip_type": request.trip_type,
+                "budget": request.budget,
+                "currency": request.currency,
+                "checkin": request.checkin,
+                "checkout": request.checkout,
+                "adults": request.adults,
+                "lat": request.lat,
+                "lng": request.lng
+            }
         )
-
-
-        if not result.get("recommendations"):
-
-            raise HTTPException(
-
-                status_code=404,
-
-                detail=result.get(
-                    "message",
-                    "No recommendation found"
-                )
-
-            )
-
-
-        # Sauvegarde historique voyageur
-
-        if request.traveler_id:
-
-            try:
-
-                save_trip(
-
-                    traveler_id=request.traveler_id,
-
-                    trip_dict={
-
-                        "raw_query": request.query,
-
-                        "intent": result.get(
-                            "intent",
-                            {}
-                        ),
-
-                        "context": result.get(
-                            "context",
-                            {}
-                        ),
-
-                        "recommendations": result.get(
-                            "recommendations",
-                            []
-                        )
-
-                    }
-
-                )
-
-
-            except Exception as e:
-
-                logger.warning(
-                    f"Trip save error : {e}"
-                )
-
-
+        
+        # ✅ Récupérer les détails complets des hôtels recommandés
+        if result.get("recommendations"):
+            enriched_hotels = []
+            for hotel in result["recommendations"]:
+                # Récupérer les détails depuis LiteAPI
+                details = await fetch_hotel_details(hotel.get("id"))
+                if details:
+                    # Fusionner les données
+                    hotel["details"] = details
+                    hotel["full_description"] = details.get("hotelDescription", "")
+                    hotel["images"] = details.get("hotelImages", [])
+                    hotel["checkin_time"] = details.get("checkinCheckoutTimes", {}).get("checkin", "Non specifie")
+                    hotel["checkout_time"] = details.get("checkinCheckoutTimes", {}).get("checkout", "Non specifie")
+                    hotel["cancellation_policies"] = details.get("cancellationPolicies", {})
+                    hotel["important_info"] = details.get("hotelImportantInformation", "")
+                    hotel["facilities_list"] = details.get("hotelFacilities", [])
+                enriched_hotels.append(hotel)
+            
+            result["recommendations"] = enriched_hotels
+        
+        # ✅ Ajouter les paramètres utilisateur pour l'affichage
+        result["user_params"] = {
+            "checkin": request.checkin,
+            "checkout": request.checkout,
+            "adults": request.adults,
+            "currency": request.currency,
+            "nights": _calculate_nights(request.checkin, request.checkout)
+        }
+        
         return result
-
-
-    except HTTPException:
-
-        raise
-
-
+        
     except Exception as e:
+        logger.error(f"Recommendation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-        logger.exception(
-            "Recommendation error"
-        )
 
-        raise HTTPException(
+async def fetch_hotel_details(hotel_id: str):
+    """Récupère les détails d'un hôtel depuis LiteAPI"""
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(
+                f"https://api.liteapi.travel/v3.0/data/hotel",
+                params={"hotelId": hotel_id, "language": "fr"},
+                headers={"X-API-Key": LITEAPI_KEY}
+            )
+            if response.status_code == 200:
+                return response.json().get("data", {})
+    except Exception as e:
+        logger.error(f"Error fetching hotel details: {e}")
+    return None
 
-            status_code=500,
 
-            detail=str(e)
-
-        )
+def _calculate_nights(checkin: str, checkout: str) -> int:
+    """Calcule le nombre de nuits entre deux dates"""
+    if not checkin or not checkout:
+        return 1
+    try:
+        from datetime import datetime
+        c_in = datetime.strptime(checkin, "%Y-%m-%d")
+        c_out = datetime.strptime(checkout, "%Y-%m-%d")
+        return max(1, (c_out - c_in).days)
+    except:
+        return 1
 
 
 
