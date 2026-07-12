@@ -12,6 +12,7 @@ from engine.engines.explain import explain_recommendations
 from engine.engines.activities import suggest_activities
 from engine.engines.traveller import get_profile, save_profile
 
+
 __all__ = [
     "recommend",
     "parse_intent",
