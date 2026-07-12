@@ -3,7 +3,7 @@ STAYO Engines - Modules de traitement
 """
 
 from engine.engines.recommend import recommend
-from engine.engines.intent import parse_intent
+from engine.engine import parse_intent
 from engine.engines.hotel import fetch_hotels
 from engine.engines.hotel_features import extract_features
 from engine.engines.geo import enrich_distances
