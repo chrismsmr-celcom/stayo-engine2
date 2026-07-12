@@ -1,8 +1,6 @@
-# engine/engines/recommend.py - VERSION CORRIGÉE
-
 """
 STAYO Recommendation Engine
-Orchestrateur principal - Version 3.1
+Orchestrateur principal - Version 3.2
 """
 
 import time
@@ -41,7 +39,28 @@ async def recommend(
             logger.info(f"   - Must have: {intent_data.get('must_have', [])}")
             logger.info(f"   - Vibe: {intent_data.get('vibe', 'confort')}")
             
-            # ===== 2. Créer l'objet Trip à partir du dict =====
+            # ✅ Récupérer les dates depuis date_range ou checkin/checkout
+            checkin = intent_data.get('checkin', '')
+            checkout = intent_data.get('checkout', '')
+            
+            # Si les dates sont vides, essayer depuis date_range
+            if not checkin or not checkout:
+                date_range = intent_data.get('date_range', [])
+                if date_range and len(date_range) >= 2:
+                    checkin = date_range[0]
+                    checkout = date_range[1]
+                    logger.info(f"   - Dates (from date_range): {checkin} → {checkout}")
+            
+            # Si toujours vides, utiliser les paramètres par défaut
+            if not checkin:
+                from datetime import datetime, timedelta
+                today = datetime.now().strftime("%Y-%m-%d")
+                tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+                checkin = today
+                checkout = tomorrow
+                logger.info(f"   - Dates (default): {checkin} → {checkout}")
+            
+            # ===== 2. Créer l'objet Trip =====
             trip = Trip()
             trip.intent = type('Intent', (), {
                 'trip_type': intent_data.get('trip_type', 'leisure'),
@@ -50,7 +69,9 @@ async def recommend(
                 'nice_to_have': intent_data.get('nice_to_have', []),
                 'avoid': intent_data.get('avoid', []),
                 'destination': intent_data.get('destination', 'Paris'),
-                'budget': intent_data.get('budget', 300)
+                'budget': intent_data.get('budget', 300),
+                'vibe': intent_data.get('vibe', 'confort'),
+                'rooms': intent_data.get('rooms', 1)
             })()
             
             trip.context = type('Context', (), {
@@ -61,8 +82,8 @@ async def recommend(
                 'currency': intent_data.get('currency', 'EUR'),
                 'adults': intent_data.get('adults', 2),
                 'children': intent_data.get('children', 0),
-                'checkin': intent_data.get('checkin', ''),
-                'checkout': intent_data.get('checkout', '')
+                'checkin': checkin,
+                'checkout': checkout
             })()
             
         else:
@@ -92,6 +113,8 @@ async def recommend(
             if overrides.get("lng"):
                 trip.context.event_lng = overrides["lng"]
         
+        logger.info(f"📅 Dates finales: checkin={trip.context.checkin}, checkout={trip.context.checkout}")
+        
         # ===== 4. Récupérer les hôtels =====
         hotels = await fetch_hotels(
             lat=trip.context.event_lat,
@@ -117,7 +140,7 @@ async def recommend(
         if not scored:
             return _empty(trip, "Aucun hôtel disponible avec des prix dans votre budget")
         
-        # ===== 7. Sélection des recommandations avec DIVERSITÉ =====
+        # ===== 7. Sélection des recommandations =====
         recommendations = _select_diverse_recommendations(scored, trip)
         
         trip.scored_hotels = scored
@@ -148,48 +171,49 @@ def _select_diverse_recommendations(scored: list, trip) -> list:
         return []
     
     trip_type = trip.intent.trip_type if hasattr(trip.intent, 'trip_type') else "leisure"
-    vibe = trip.intent.vibe if hasattr(trip.intent, 'vibe') else "confort"
     budget = trip.context.budget if hasattr(trip.context, 'budget') else 250
     
     recommendations = []
+    scored_copy = scored.copy()
     
     # 1. Le MEILLEUR hôtel
-    if scored:
-        recommendations.append(scored[0])
-        scored.pop(0)
+    if scored_copy:
+        recommendations.append(scored_copy[0])
+        scored_copy.pop(0)
     
-    # 2. Un hôtel moins cher
-    cheap_hotels = [h for h in scored if h.get("price", 0) < budget * 0.7]
-    if cheap_hotels and len(recommendations) < 5:
-        recommendations.append(cheap_hotels[0])
-        scored.remove(cheap_hotels[0])
+    # 2. Un hôtel moins cher (si budget)
+    if budget:
+        cheap_hotels = [h for h in scored_copy if h.get("price", 0) < budget * 0.7]
+        if cheap_hotels and len(recommendations) < 5:
+            recommendations.append(cheap_hotels[0])
+            scored_copy.remove(cheap_hotels[0])
     
     # 3. Un hôtel dans le budget
-    mid_hotels = [h for h in scored if budget * 0.7 <= h.get("price", 0) <= budget]
+    mid_hotels = [h for h in scored_copy if budget * 0.7 <= h.get("price", 0) <= budget]
     if mid_hotels and len(recommendations) < 5:
         recommendations.append(mid_hotels[0])
-        scored.remove(mid_hotels[0])
+        scored_copy.remove(mid_hotels[0])
     
     # 4. Un hôtel proche
-    close_hotels = [h for h in scored if h.get("distance_event_minutes", 99) < 10]
+    close_hotels = [h for h in scored_copy if h.get("distance_event_minutes", 99) < 10]
     if close_hotels and len(recommendations) < 5:
         recommendations.append(close_hotels[0])
-        scored.remove(close_hotels[0])
+        scored_copy.remove(close_hotels[0])
     
-    # 5. Pour les familles : appartement
+    # 5. Pour les familles : appartement/suite
     if trip_type == "family":
-        apartment_hotels = [h for h in scored if any(
+        apartment_hotels = [h for h in scored_copy if any(
             word in h.get("name", "").lower() 
             for word in ["appart", "suite", "residence", "apartment"]
         )]
         if apartment_hotels and len(recommendations) < 5:
             recommendations.append(apartment_hotels[0])
-            scored.remove(apartment_hotels[0])
+            scored_copy.remove(apartment_hotels[0])
     
     # Compléter avec les meilleurs restants
-    while len(recommendations) < 5 and scored:
-        recommendations.append(scored[0])
-        scored.pop(0)
+    while len(recommendations) < 5 and scored_copy:
+        recommendations.append(scored_copy[0])
+        scored_copy.pop(0)
     
     return recommendations[:5]
 
