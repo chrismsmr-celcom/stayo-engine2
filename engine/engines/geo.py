@@ -1,782 +1,147 @@
 """
-STAYO Geo Engine
-Gestion des distances, temps de trajet et contexte géographique.
-
-Fonctions :
-- Calcul distance hôtel -> lieux importants
-- Temps de trajet réel via OpenRouteService
-- Fallback Haversine
-- Score géographique pour le ranking
+Geo Engine — Distances et temps de trajet.
 """
 
 import os
 import httpx
-
 from math import radians, sin, cos, sqrt, asin
+import logging
 
-from engine.core.trip import Trip
+logger = logging.getLogger(__name__)
 
-
-ORS_KEY = os.getenv("OPENROUTESERVICE_KEY")
-
-
-ORS_BASE_URL = (
-    "https://api.openrouteservice.org/v2/matrix/"
-)
+ORS_KEY = os.getenv("OPENROUTESERVICE_KEY", "")
 
 
-# --------------------------------------------------
-# ENTRY POINT
-# --------------------------------------------------
-
-
-async def enrich_distances(
-    hotels: list,
-    trip: Trip
-) -> list:
-
+async def enrich_distances(hotels: list, trip) -> list:
     """
-    Ajoute les informations géographiques
-    à chaque hôtel.
+    Enrichit les hôtels avec les distances (en minutes) vers les points d'intérêt.
+    
+    Args:
+        hotels: Liste des hôtels
+        trip: Objet Trip avec context (peut être un dict ou un objet)
+    
+    Returns:
+        Liste des hôtels enrichis avec distance_event_minutes et distance_family_minutes
     """
-
-    if not trip.context.event_lat or not trip.context.event_lng:
-
+    if not hotels:
+        return []
+    
+    # Extraire les coordonnées du trip (compatible dict et objet)
+    event_lat, event_lng, family_lat, family_lng = _extract_coordinates(trip)
+    
+    # Si pas de coordonnées, retourner les hôtels sans distances
+    if event_lat is None or event_lng is None:
+        logger.warning("Aucune coordonnée dans le trip, distances non calculées")
         return hotels
-
-
-    destinations = _build_destinations(trip)
-
-
-    origins = []
-
-
-    for hotel in hotels:
-
-        lat = hotel.get("lat")
-
-        lng = hotel.get("lng")
-
-
-        if lat and lng:
-
-            origins.append(
-                [
-                    lng,
-                    lat
-                ]
-            )
-
-        else:
-
-            origins.append(None)
-
-
-
-    origins_clean = [
-        o for o in origins if o
-    ]
-
-
-    if not origins_clean:
-
-        return hotels
-
-
-
-    profile = _select_profile(trip)
-
-
-
+    
+    # Construire les origines (hôtels) et destinations (points d'intérêt)
+    origins = [[h["lng"], h["lat"]] for h in hotels]
+    destinations = [[event_lng, event_lat]]
+    
+    if family_lat is not None and family_lng is not None:
+        destinations.append([family_lng, family_lat])
+    
+    # Calculer les durées
     if ORS_KEY:
-
-        durations = await _ors_matrix(
-
-            origins_clean,
-
-            destinations,
-
-            profile
-
-        )
-
+        durations = await _ors_matrix(origins, destinations)
     else:
-
-        durations = _haversine_matrix(
-
-            origins_clean,
-
-            destinations
-
-        )
-
-
-
-    index = 0
-
-
-    for hotel in hotels:
-
-
-        if origins[index] is None:
-
-            continue
-
-
-
-        times = durations[index]
-
-
-
-        hotel["distance_event_minutes"] = round(
-
-            times[0] / 60,
-
-            1
-
-        )
-
-
-        hotel["geo_profile"] = profile
-
-
-
-        if len(times) > 1:
-
-            hotel["distance_family_minutes"] = round(
-
-                times[1] / 60,
-
-                1
-
-            )
-
-
-
-        hotel["geo_score"] = _geo_score(
-
-            hotel,
-
-            trip
-
-        )
-
-
-        index += 1
-
-
-
+        durations = _haversine_matrix(origins, destinations)
+    
+    # Ajouter les distances aux hôtels
+    for i, hotel in enumerate(hotels):
+        if i < len(durations):
+            # Distance vers l'événement (en minutes, convertie depuis les secondes)
+            hotel["distance_event_minutes"] = round(durations[i][0] / 60, 1) if durations[i][0] is not None else None
+            
+            if len(destinations) > 1 and i < len(durations):
+                hotel["distance_family_minutes"] = round(durations[i][1] / 60, 1) if durations[i][1] is not None else None
+    
     return hotels
 
 
-
-# --------------------------------------------------
-# DESTINATIONS
-# --------------------------------------------------
-
-
-def _build_destinations(trip: Trip):
-
-    """
-    Crée la liste des points importants.
-    """
-
-    points = []
-
-
-    # lieu principal
-
-    points.append(
-
-        [
-
-            trip.context.event_lng,
-
-            trip.context.event_lat
-
-        ]
-
-    )
-
-
-    # famille / deuxième lieu
-
-    if (
-
-        trip.context.family_lat
-
-        and
-
-        trip.context.family_lng
-
-    ):
-
-        points.append(
-
-            [
-
-                trip.context.family_lng,
-
-                trip.context.family_lat
-
-            ]
-
-        )
-
-
-    return points
-
-
-
-# --------------------------------------------------
-# TRANSPORT PROFILE
-# --------------------------------------------------
-
-
-def _select_profile(trip: Trip):
-
-    """
-    Choisit le mode de transport.
-    """
-
-    trip_type = (
-
-        trip.context.trip_type
-
-        or
-
-        "leisure"
-
-    )
-
-
-    if trip_type == "business":
-
-        return "driving-car"
-
-
-    if trip_type == "family":
-
-        return "driving-car"
-
-
-    if trip_type == "backpacker":
-
-        return "foot-walking"
-
-
-    return "foot-walking"
-    # --------------------------------------------------
-# OPENROUTESERVICE MATRIX
-# --------------------------------------------------
-
-
-async def _ors_matrix(
-    origins: list,
-    destinations: list,
-    profile: str
-):
-
-    """
-    Récupère les temps de trajet réels
-    via OpenRouteService.
-    """
-
-    try:
-
-        async with httpx.AsyncClient(
-            timeout=15
-        ) as client:
-
-
-            response = await client.post(
-
-                f"{ORS_BASE_URL}{profile}",
-
-                headers={
-
-                    "Authorization": ORS_KEY,
-
-                    "Content-Type": "application/json"
-
-                },
-
-                json={
-
-                    "locations":
-
-                        origins + destinations,
-
-                    "metrics":
-
-                        ["duration"],
-
-                    "units":
-
-                        "m"
-
-                }
-
+def _extract_coordinates(trip):
+    """Extrait les coordonnées du trip (compatible dict et objet)"""
+    if hasattr(trip, 'context'):
+        context = trip.context
+        if isinstance(context, dict):
+            return (
+                context.get("event_lat"),
+                context.get("event_lng"),
+                context.get("family_lat"),
+                context.get("family_lng")
             )
-
-
-        if response.status_code != 200:
-
-            return _haversine_matrix(
-
-                origins,
-
-                destinations
-
-            )
-
-
-        data = response.json()
-
-
-        durations = data.get(
-            "durations",
-            []
-        )
-
-
-        result = []
-
-
-        destination_start = len(origins)
-
-
-        for i in range(len(origins)):
-
-            row = []
-
-
-            for j in range(len(destinations)):
-
-
-                try:
-
-                    value = durations[i][destination_start + j]
-
-                except Exception:
-
-                    value = None
-
-
-
-                if value is None:
-
-                    value = 999999
-
-
-
-                row.append(value)
-
-
-
-            result.append(row)
-
-
-
-        return result
-
-
-
-    except Exception as e:
-
-
-        print(
-            f"ORS error : {e}"
-        )
-
-
-        return _haversine_matrix(
-
-            origins,
-
-            destinations
-
-        )
-
-
-
-
-
-# --------------------------------------------------
-# HAVERSINE FALLBACK
-# --------------------------------------------------
-
-
-def _haversine_matrix(
-    origins,
-    destinations
-):
-
-    """
-    Estimation quand ORS n'est pas disponible.
-
-    Conversion approximative :
-    distance km -> minutes voiture.
-    """
-
-    result = []
-
-
-    for origin in origins:
-
-
-        row = []
-
-
-        for destination in destinations:
-
-
-            distance = _haversine(
-
-                origin[1],
-
-                origin[0],
-
-                destination[1],
-
-                destination[0]
-
-            )
-
-
-            # estimation voiture :
-            # 30 km/h en ville
-
-            minutes = (
-
-                distance / 30
-
-            ) * 60
-
-
-
-            row.append(
-
-                minutes * 60
-
-            )
-
-
-
-        result.append(row)
-
-
-
-    return result
-
-
-
-
-
-def _haversine(
-    lat1,
-    lng1,
-    lat2,
-    lng2
-):
-
-    """
-    Distance GPS en kilomètres.
-    """
-
-    R = 6371
-
-
-    dlat = radians(
-        lat2 - lat1
-    )
-
-    dlng = radians(
-        lng2 - lng1
-    )
-
-
-    a = (
-
-        sin(dlat / 2) ** 2
-
-        +
-
-        cos(radians(lat1))
-
-        *
-
-        cos(radians(lat2))
-
-        *
-
-        sin(dlng / 2) ** 2
-
-    )
-
-
-    return R * 2 * asin(
-        sqrt(a)
-    )
-    # --------------------------------------------------
-# GEO SCORE
-# --------------------------------------------------
-
-
-def _geo_score(
-    hotel,
-    trip: Trip
-):
-
-    """
-    Score géographique global.
-
-    Plus le logement est pratique
-    pour le voyageur, plus le score est élevé.
-    """
-
-    score = 100
-
-
-    event_time = hotel.get(
-        "distance_event_minutes"
-    )
-
-
-    family_time = hotel.get(
-        "distance_family_minutes"
-    )
-
-
-
-    # Importance du lieu principal
-
-    if event_time is not None:
-
-
-        if event_time <= 5:
-
-            score += 0
-
-
-        elif event_time <= 10:
-
-            score -= 5
-
-
-        elif event_time <= 20:
-
-            score -= 15
-
-
-        elif event_time <= 30:
-
-            score -= 30
-
-
         else:
-
-            score -= 50
-
-
-
-    # Deuxième lieu important
-
-    if family_time is not None:
-
-
-        if family_time <= 15:
-
-            score += 5
-
-
-        elif family_time <= 30:
-
-            score -= 5
-
-
-        elif family_time > 45:
-
-            score -= 15
-
-
-
-    return max(
-        0,
-        min(score,100)
-    )
-
-
-
-
-
-# --------------------------------------------------
-# CENTRE DE GRAVITE DU VOYAGE
-# --------------------------------------------------
-
-
-def calculate_trip_center(
-    trip: Trip
-):
-
-    """
-    Calcule le point géographique moyen
-    du voyage.
-
-    Exemple :
-
-    Conférence La Défense 70%
-
-    Famille Clamart 30%
-
-    """
-
-    points = []
-
-
-    weights = []
-
-
-
-    if (
-
-        trip.context.event_lat
-
-        and
-
-        trip.context.event_lng
-
-    ):
-
-        points.append(
-
-            (
-
-                trip.context.event_lat,
-
-                trip.context.event_lng
-
+            return (
+                getattr(context, "event_lat", None),
+                getattr(context, "event_lng", None),
+                getattr(context, "family_lat", None),
+                getattr(context, "family_lng", None)
             )
-
+    elif isinstance(trip, dict):
+        return (
+            trip.get("event_lat"),
+            trip.get("event_lng"),
+            trip.get("family_lat"),
+            trip.get("family_lng")
         )
+    return (None, None, None, None)
 
 
-        weights.append(0.7)
-
-
-
-    if (
-
-        trip.context.family_lat
-
-        and
-
-        trip.context.family_lng
-
-    ):
-
-        points.append(
-
-            (
-
-                trip.context.family_lat,
-
-                trip.context.family_lng
-
+async def _ors_matrix(origins, destinations):
+    """Utilise l'API OpenRouteService pour calculer les distances"""
+    if not ORS_KEY:
+        logger.warning("ORS_KEY non configuré, utilisation de Haversine")
+        return _haversine_matrix(origins, destinations)
+    
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                "https://api.openrouteservice.org/v2/matrix/foot-walking",
+                json={
+                    "locations": origins + destinations,
+                    "metrics": ["duration"],
+                    "units": "m"
+                },
+                headers={"Authorization": ORS_KEY}
             )
-
-        )
-
-
-        weights.append(0.3)
-
-
-
-    if not points:
-
-        return None
-
-
-
-    lat = 0
-
-    lng = 0
-
-
-
-    for i, point in enumerate(points):
-
-        lat += point[0] * weights[i]
-
-        lng += point[1] * weights[i]
+            
+            if response.status_code != 200:
+                logger.warning(f"ORS API error: {response.status_code}, fallback sur Haversine")
+                return _haversine_matrix(origins, destinations)
+            
+            data = response.json()
+            n = len(origins)
+            durations = []
+            
+            for i in range(n):
+                row = []
+                for j in range(len(destinations)):
+                    val = data["durations"][i][n + j]
+                    row.append(val)
+                durations.append(row)
+            
+            return durations
+    except Exception as e:
+        logger.warning(f"ORS API exception: {e}, fallback sur Haversine")
+        return _haversine_matrix(origins, destinations)
 
 
-
-    return {
-
-        "lat": lat,
-
-        "lng": lng
-
-    }
-
-
-
-
-
-# --------------------------------------------------
-# VOYAGE COMPLEXITY SCORE
-# --------------------------------------------------
-
-
-def calculate_trip_complexity(
-    trip: Trip
-):
-
-    """
-    Mesure la difficulté du voyage.
-
-    Plus il y a de contraintes,
-    plus Stayo doit être intelligent.
-    """
-
-    complexity = 0
-
-
-
-    if trip.context.event:
-
-        complexity += 20
-
-
-
-    if trip.context.family_lat:
-
-        complexity += 20
-
-
-
-    if len(
-        trip.context.preferences
-    ) > 3:
-
-        complexity += 20
-
-
-
-    if trip.context.budget:
-
-        complexity += 10
-
-
-
-    if trip.context.trip_type:
-
-        complexity += 10
-
-
-
-    return min(
-        complexity,
-        100
-    )
+def _haversine_matrix(origins, destinations):
+    """Calcule les distances avec la formule de Haversine (en km puis converties en minutes)"""
+    def haversine(lat1, lng1, lat2, lng2):
+        R = 6371  # Rayon de la Terre en km
+        dlat = radians(lat2 - lat1)
+        dlng = radians(lng2 - lng1)
+        a = sin(dlat/2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlng/2)**2
+        return R * 2 * asin(sqrt(a))
+    
+    durations = []
+    for o in origins:
+        row = []
+        for d in destinations:
+            # Convertir km en minutes (environ 12 km/h en moyenne)
+            minutes = haversine(o[1], o[0], d[1], d[0]) * 12 * 60
+            row.append(minutes)
+        durations.append(row)
+    
+    return durations
