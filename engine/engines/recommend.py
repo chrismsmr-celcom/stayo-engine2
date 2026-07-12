@@ -6,7 +6,7 @@ Orchestrateur principal - Version 3.2
 import time
 import logging
 from engine.core.trip import Trip
-from engine.engines.intent import parse_intent
+from engine.engine import parse_intent
 from engine.engines.hotel import fetch_hotels
 from engine.engines.geo import enrich_distances
 from engine.engines.scoring import score_hotels
