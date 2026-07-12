@@ -120,9 +120,6 @@ async def _search_hotels(client, lat, lng, radius, limit):
 # --------------------------------------------------
 
 async def _fetch_prices(client, hotels, checkin, checkout, adults, currency):
-    """
-    Récupère les prix disponibles pour les hôtels.
-    """
     prices = {}
     ids = [h["id"] for h in hotels[:100] if h.get("id")]
     
@@ -147,29 +144,26 @@ async def _fetch_prices(client, hotels, checkin, checkout, adults, currency):
         )
         
         if response.status_code != 200:
-            logger.warning(f"LiteAPI rates error: {response.status_code}")
+            print(f"LiteAPI rates error: {response.status_code}")
             return prices
         
         data = response.json()
-        rate_data = data.get("data", [])
         
-        # Log de débogage pour le premier hôtel
-        if rate_data:
-            sample = rate_data[0]
-            logger.debug(f"Sample rate response: {json.dumps(sample, indent=2)[:500]}")
+        # ✅ AJOUT : Log de la réponse complète
+        print(f"LiteAPI rates response: {json.dumps(data, indent=2)[:2000]}")
         
-        for hotel_rate in rate_data:
-            hotel_id = hotel_rate.get("hotelId")
-            amount = _extract_price(hotel_rate)
+        for hotel in data.get("data", []):
+            hotel_id = hotel.get("hotelId")
+            amount = _extract_price(hotel)
+            
+            # ✅ AJOUT : Log pour chaque hôtel
+            print(f"Hotel {hotel_id}: amount={amount}, raw={hotel}")
             
             if amount and hotel_id:
                 prices[hotel_id] = round(float(amount))
-                logger.debug(f"Price for {hotel_id}: {amount}")
-        
-        logger.info(f"{len(prices)} prix récupérés")
         
     except Exception as e:
-        logger.error(f"Price error: {e}")
+        print(f"Price error: {e}")
     
     return prices
 
