@@ -98,8 +98,9 @@ Ne réponds QUE du JSON.
             DEEPSEEK_URL,
 
             headers={
-                "Authorization": f"Bearer {DEEPSEEK_KEY}"
-            },
+    "Authorization": f"Bearer {DEEPSEEK_KEY}",
+    "Content-Type": "application/json"
+},
 
             json={
 
@@ -160,12 +161,29 @@ def _fallback(query):
 
     budget = 250
 
-    m = re.search(r"(\d+)", q)
+    m = re.search(r"(\d+)\s*(€|eur|euros?)", q)
+if m:
+    budget = int(m.group(1))
 
     if m:
 
         budget = int(m.group(1))
+preferences = []
 
+keywords = [
+    "wifi",
+    "spa",
+    "restaurant",
+    "parking",
+    "piscine",
+    "balcon",
+    "vue",
+    "petit-déjeuner",
+]
+
+for keyword in keywords:
+    if keyword in q:
+        preferences.append(keyword)
     return {
 
         "trip_type": trip_type,
@@ -186,8 +204,7 @@ def _fallback(query):
 
         "adults": 2 if "couple" in q else 1,
 
-        "preferences": [],
-
+"preferences": preferences,
         "confidence":60
 
     }
@@ -199,26 +216,27 @@ def _fallback(query):
 
 def _fill_trip(trip: Trip, data: dict):
 
-    trip.context.trip_type = data.get("trip_type")
+    trip.context.trip_type = data.get("trip_type", "leisure")
 
-    trip.context.destination = data.get("destination")
+    trip.context.destination = data.get("destination", "")
 
-    trip.context.event = data.get("destination")
+    trip.context.event = data.get("destination", "")
 
-    trip.context.event_lat = data.get("destination_lat")
+    trip.context.event_lat = data.get("destination_lat", 48.8566)
 
-    trip.context.event_lng = data.get("destination_lng")
+    trip.context.event_lng = data.get("destination_lng", 2.3522)
 
-    trip.context.budget = data.get("budget")
+    trip.context.budget = data.get("budget", 250)
 
-    trip.context.currency = data.get("currency")
+    trip.context.currency = data.get("currency", "EUR")
 
     trip.context.checkin = data.get("checkin")
 
     trip.context.checkout = data.get("checkout")
 
-    trip.context.adults = data.get("adults")
+    trip.context.adults = data.get("adults", 1)
 
     trip.context.preferences = data.get("preferences", [])
 
     trip.context.confidence = data.get("confidence", 60)
+
