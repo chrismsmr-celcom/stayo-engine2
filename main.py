@@ -57,10 +57,20 @@ app.add_middleware(
 # =====================================================
 
 class SearchRequest(BaseModel):
-
-    query: str
-
+    """Requête de recherche de recommandations"""
+    query: str = "test"
     traveler_id: Optional[str] = None
+    
+    # ✅ AJOUTER trip_type
+    trip_type: Optional[str] = None  # business, romantic, family, backpacker, leisure
+    
+    budget: Optional[float] = None
+    currency: Optional[str] = "EUR"
+    checkin: Optional[str] = None
+    checkout: Optional[str] = None
+    adults: Optional[int] = 2
+    lat: Optional[float] = None
+    lng: Optional[float] = None
 
 
 
