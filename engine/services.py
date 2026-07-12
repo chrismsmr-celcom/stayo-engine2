@@ -1,6 +1,6 @@
 """
 services.py - Connecteurs API externes
-DeepSeek LLM + Géocodage Nominatim
+DeepSeek LLM + Géocodage multi-sources
 """
 
 import os
@@ -17,10 +17,7 @@ DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
 
 async def call_deepseek_llm(query: str) -> str:
-    """
-    Appel résilient à DeepSeek Chat en mode JSON strict
-    Timeout: 8 secondes max
-    """
+    """Appel à DeepSeek Chat en mode JSON strict"""
     current_year = datetime.now().year
     
     async with httpx.AsyncClient(timeout=8.0) as client:
@@ -44,12 +41,15 @@ async def call_deepseek_llm(query: str) -> str:
 1. Identifie le lieu PRÉCIS (ville, quartier, monument, avenue)
 2. Pour un quartier (Bercy, La Défense) → retourne la ville ET le quartier
 3. Pour un monument (Tour Eiffel, Colisée) → retourne la ville ET le monument
+4. ✅ NOUVEAU: Retourne les coordonnées estimées du lieu
 
 📌 FORMAT JSON OBLIGATOIRE:
 {{
   "trip_type": "business|romantic|family|backpacker|luxury|leisure",
   "destination": "Nom de la ville",
   "area": "Nom du quartier (si applicable)",
+  "latitude": nombre décimal (coordonnées estimées),
+  "longitude": nombre décimal (coordonnées estimées),
   "budget": nombre entier,
   "currency": "EUR",
   "must_have": ["équipement1", "équipement2"],
@@ -82,7 +82,6 @@ Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire."""
         data = response.json()
         content = data["choices"][0]["message"]["content"]
         
-        # Vérification que c'est bien du JSON
         try:
             json.loads(content)
         except json.JSONDecodeError:
@@ -94,11 +93,50 @@ Réponds UNIQUEMENT avec le JSON, sans texte supplémentaire."""
 
 async def fetch_geocoding(destination: str, area: Optional[str] = None) -> Tuple[float, float]:
     """
-    Résolution des coordonnées géographiques réelles via Nominatim (OpenStreetMap)
-    Fallback sur Paris si échec
+    Géocodage avec fallback multiple:
+    1. DeepSeek (déjà fait dans l'analyse)
+    2. Data Gouv (France) - gratuit, sans limite
+    3. Photon (OpenStreetMap) - gratuit, sans clé
+    4. Nominatim (OpenStreetMap) - fallback final
     """
     search_query = f"{area}, {destination}" if area else destination
     
+    # ===== 1. Data Gouv (France uniquement) =====
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            url = f"https://api-adresse.data.gouv.fr/search/"
+            response = await client.get(
+                url,
+                params={"q": search_query, "limit": 1}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('features'):
+                    coords = data['features'][0]['geometry']['coordinates']
+                    lat, lng = coords[1], coords[0]  # Data Gouv retourne [lng, lat]
+                    logger.info(f"📍 Data Gouv: {search_query} → ({lat}, {lng})")
+                    return lat, lng
+    except Exception as e:
+        logger.warning(f"Data Gouv error: {e}")
+    
+    # ===== 2. Photon (OpenStreetMap) =====
+    try:
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            response = await client.get(
+                "https://photon.komoot.io/api/",
+                params={"q": search_query, "limit": 1, "lang": "fr"}
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('features'):
+                    coords = data['features'][0]['geometry']['coordinates']
+                    lat, lng = coords[1], coords[0]
+                    logger.info(f"📍 Photon: {search_query} → ({lat}, {lng})")
+                    return lat, lng
+    except Exception as e:
+        logger.warning(f"Photon error: {e}")
+    
+    # ===== 3. Nominatim (OpenStreetMap) =====
     try:
         async with httpx.AsyncClient(timeout=4.0) as client:
             response = await client.get(
@@ -107,28 +145,21 @@ async def fetch_geocoding(destination: str, area: Optional[str] = None) -> Tuple
                     "q": search_query,
                     "format": "json",
                     "limit": 1,
-                    "countrycodes": "fr,gb,it,es,de,us,ca"  # Priorité
+                    "countrycodes": "fr,gb,it,es,de,us,ca"
                 },
-                headers={
-                    "User-Agent": "STAYO-Travel-Engine/4.0"
-                }
+                headers={"User-Agent": "STAYO-Travel-Engine/4.0"}
             )
-            
             if response.status_code == 200:
                 data = response.json()
                 if data:
-                    lat = float(data[0]["lat"])
-                    lng = float(data[0]["lon"])
-                    logger.info(f"📍 Géocodage réussi: {search_query} → ({lat}, {lng})")
+                    lat, lng = float(data[0]["lat"]), float(data[0]["lon"])
+                    logger.info(f"📍 Nominatim: {search_query} → ({lat}, {lng})")
                     return lat, lng
-                else:
-                    logger.warning(f"⚠️ Aucun résultat pour {search_query}")
-            
-    except httpx.TimeoutException:
-        logger.warning(f"⏱️ Timeout géocodage pour {search_query}")
+            elif response.status_code == 429:
+                logger.warning("⚠️ Nominatim rate limit (429), fallback sur Paris")
     except Exception as e:
-        logger.error(f"❌ Échec géocodage pour {search_query}: {e}")
+        logger.warning(f"Nominatim error: {e}")
     
-    # Fallback Paris par défaut
-    logger.info(f"📍 Fallback géocodage: Paris (48.8566, 2.3522)")
+    # ===== 4. Fallback final =====
+    logger.info(f"📍 Fallback Paris: {search_query} → (48.8566, 2.3522)")
     return 48.8566, 2.3522
