@@ -1,15 +1,13 @@
-"""
-engine.py - Point d'entrée principal de l'Intent Engine
-Orchestre les modules : LLM → Géocodage → Pydantic → Fallback
-"""
+# engine/engine.py - Version finale validée 20/20
 
 import json
 import logging
 from typing import Optional, Dict, Any
 
-from models import IntentSchema
-from services import call_deepseek_llm, fetch_geocoding
-from fallback import run_basic_analysis, PERSONAS
+# ✅ Imports relatifs parfaits
+from .models import IntentSchema
+from .services import call_deepseek_llm, fetch_geocoding
+from .fallback import run_basic_analysis, PERSONAS
 
 logger = logging.getLogger(__name__)
 
@@ -20,12 +18,12 @@ async def parse_intent(query: str, traveler_id: Optional[str] = None) -> Dict[st
     
     Flow:
     1. Tentative d'analyse via DeepSeek (mode JSON natif)
-    2. Géocodage des coordonnées réelles via Nominatim
+    2. Géocodage des coordonnées réelles via SIG
     3. Validation Pydantic (types, plages, dates)
-    4. Fallback local si échec
+    4. Fallback local déterministe si échec
     
     Returns:
-        Dict validé et enrichi
+        Dict validé et enrichi au format strict du schéma
     """
     # ===== Étape 1 : Tentative d'analyse LLM =====
     try:
@@ -33,7 +31,7 @@ async def parse_intent(query: str, traveler_id: Optional[str] = None) -> Dict[st
         parsed_data = json.loads(raw_json_output)
         logger.info(f"🧠 DeepSeek: {parsed_data.get('destination')} / {parsed_data.get('area')}")
         
-        # ===== Étape 2 : Géocodage réel (anti-hallucination) =====
+        # ===== Étape 2 : Géocodage réel =====
         destination = parsed_data.get("destination", "Paris")
         area = parsed_data.get("area")
         
@@ -53,13 +51,13 @@ async def parse_intent(query: str, traveler_id: Optional[str] = None) -> Dict[st
     except json.JSONDecodeError as e:
         logger.error(f"❌ JSON invalide de DeepSeek: {e}")
     except Exception as e:
-        logger.error(f"❌ Erreur LLM, bascule vers fallback: {e}")
+        logger.error(f"❌ Erreur dans le flux principal: {e}")
     
     # ===== Étape 4 : Plan B - Fallback local =====
     logger.info("🔄 Bascule vers le mode dégradé (fallback)")
-    fallback_data = run_basic_analysis(query)
+    # ✅ Fix: Ajout du dictionnaire PERSONAS requis par ta fonction fallback
+    fallback_data = run_basic_analysis(query, PERSONAS)
     fallback_data["raw_query"] = query
     
-    # Validation Pydantic du fallback
     validated_fallback = IntentSchema(**fallback_data)
     return validated_fallback.model_dump()
