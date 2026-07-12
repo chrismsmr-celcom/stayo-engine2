@@ -1,6 +1,6 @@
 """
 Intent Engine — Compréhension de la requête voyageur
-Version 2.0 - Analyse avancée
+Version 3.0 - VRAIE intelligence
 """
 
 import json
@@ -9,33 +9,108 @@ import re
 import httpx
 from typing import Dict, Any, Optional
 import logging
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
 DEEPSEEK_KEY = os.getenv("DEEPSEEK_KEY", "")
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 
+# ============================================================
+# BASE DE CONNAISSANCES
+# ============================================================
+
+PERSONAS = {
+    "business": {
+        "must_have": ["wifi haut débit", "business center", "salle de réunion", "calme"],
+        "nice_to_have": ["restaurant", "bar", "parking"],
+        "budget_multiplier": 1.5,
+        "keywords": ["business", "affaires", "conférence", "réunion", "travail", "client", "pro", "wifi"],
+        "vibe": "professionnel"
+    },
+    "romantic": {
+        "must_have": ["chambre double", "vue", "restaurant"],
+        "nice_to_have": ["spa", "bar", "balcon", "room service"],
+        "budget_multiplier": 1.2,
+        "keywords": ["romantique", "couple", "amoureux", "lune de miel", "anniversaire", "week-end", "escapade", "ma femme", "ma copine", "mon mari", "mon copain"],
+        "vibe": "romantique"
+    },
+    "family": {
+        "must_have": ["chambre familiale", "parking", "petit déjeuner"],
+        "nice_to_have": ["piscine", "club enfants", "restaurant", "cuisine", "living room"],
+        "budget_multiplier": 0.8,
+        "keywords": ["famille", "enfant", "enfants", "familial", "bébé", "maman", "papa", "frère", "sœur", "parents"],
+        "vibe": "familial"
+    },
+    "backpacker": {
+        "must_have": ["wifi gratuit", "bagagerie", "cuisine partagée"],
+        "nice_to_have": ["ambiance sociale", "bar", "terrasse"],
+        "budget_multiplier": 0.5,
+        "keywords": ["backpacker", "auberge", "jeunesse", "pas cher", "budget", "solo", "voyageur solo"],
+        "vibe": "décontracté"
+    },
+    "luxury": {
+        "must_have": ["concierge", "suite", "restaurant gastronomique"],
+        "nice_to_have": ["spa", "piscine", "vue", "butler", "limousine"],
+        "budget_multiplier": 2.5,
+        "keywords": ["luxe", "luxury", "5 étoiles", "palace", "premium", "vip", "suite"],
+        "vibe": "luxueux"
+    }
+}
+
+CITY_KNOWLEDGE = {
+    "paris": {
+        "budget_min": 150,
+        "budget_avg": 250,
+        "family_areas": ["15ème", "16ème", "banlieue"],
+        "business_areas": ["8ème", "9ème", "La Défense"],
+        "romantic_areas": ["Saint-Germain", "Montmartre", "Marais"],
+        "backpacker_areas": ["10ème", "11ème", "Belleville"],
+        "lat": 48.8566,
+        "lng": 2.3522
+    },
+    "londres": {
+        "budget_min": 200,
+        "budget_avg": 350,
+        "family_areas": ["Kensington", "Camden", "Greenwich"],
+        "business_areas": ["City", "Canary Wharf", "Westminster"],
+        "romantic_areas": ["Notting Hill", "Covent Garden", "South Bank"],
+        "backpacker_areas": ["Shoreditch", "Brixton", "Camden"],
+        "lat": 51.5074,
+        "lng": -0.1278
+    },
+    "venise": {
+        "budget_min": 180,
+        "budget_avg": 300,
+        "family_areas": ["Cannaregio", "Castello"],
+        "business_areas": ["San Marco", "Piazzale Roma"],
+        "romantic_areas": ["San Marco", "Dorsoduro", "Giudecca"],
+        "backpacker_areas": ["Cannaregio", "Santa Croce"],
+        "lat": 45.4408,
+        "lng": 12.3155
+    }
+}
+
 
 async def parse_intent(query: str, traveler_id: str = None) -> Dict[str, Any]:
-    """
-    Analyse la requête pour extraire l'intention du voyageur
-    """
-    # D'abord, essayer DeepSeek
+    """Analyse la requête avec intelligence"""
+    
+    # ===== 1. Essayer DeepSeek (IA) =====
     if DEEPSEEK_KEY:
         try:
             result = await _analyze_with_deepseek(query)
             if result:
-                logger.info(f"DeepSeek analysis: {result}")
-                return result
+                logger.info(f"🧠 DeepSeek: {result}")
+                return _enrich_with_knowledge(result, query)
         except Exception as e:
-            logger.warning(f"DeepSeek error: {e}, fallback sur analyse basique")
+            logger.warning(f"DeepSeek error: {e}")
     
-    # Fallback : analyse basique avancée
-    return _analyze_basic(query)
+    # ===== 2. Fallback: analyse avancée =====
+    return _analyze_advanced(query)
 
 
 async def _analyze_with_deepseek(query: str) -> Dict[str, Any]:
-    """Analyse la requête avec DeepSeek API"""
+    """Analyse avec DeepSeek - prompt amélioré"""
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             DEEPSEEK_URL,
@@ -48,24 +123,37 @@ async def _analyze_with_deepseek(query: str) -> Dict[str, Any]:
                 "messages": [
                     {
                         "role": "system",
-                        "content": """Tu es un assistant spécialisé dans l'analyse de requêtes touristiques.
-                        Extrais les informations suivantes au format JSON:
-                        {
-                            "trip_type": "business|romantic|family|backpacker|leisure",
-                            "destination": "nom de la ville",
-                            "budget": budget estimé (nombre, en euros),
-                            "currency": "EUR|USD|GBP",
-                            "lat": latitude (nombre),
-                            "lng": longitude (nombre),
-                            "must_have": ["liste", "des", "équipements", "souhaités"],
-                            "checkin": "YYYY-MM-DD",
-                            "checkout": "YYYY-MM-DD",
-                            "adults": nombre (entier),
-                            "children": nombre (entier),
-                            "rooms": nombre de chambres (entier),
-                            "vibe": "luxe|budget|confort|design|familial"
-                        }
-                        Réponds UNIQUEMENT avec le JSON, sans autre texte."""
+                        "content": """Tu es un agent de voyage expert. Analyse la requête et retourne un JSON.
+
+RÈGLES OBLIGATOIRES:
+1. trip_type: business|romantic|family|backpacker|luxury|leisure
+2. destination: ville principale
+3. budget: montant en euros (estimation réaliste)
+4. must_have: liste des équipements ESSENTIELS (max 5)
+5. nice_to_have: liste des équipements SOUHAITABLES (max 5)
+6. adults: nombre d'adultes (défaut: 2)
+7. children: nombre d'enfants (défaut: 0)
+8. rooms: nombre de chambres nécessaires
+9. vibe: luxe|confort|budget|design|familial|romantique
+10. date_range: [checkin, checkout] au format YYYY-MM-DD
+
+EXEMPLE:
+Requête: "Famille nombreuse à Paris 350€ du 25 au 30 juillet"
+Réponse:
+{
+  "trip_type": "family",
+  "destination": "Paris",
+  "budget": 350,
+  "must_have": ["piscine", "chambre familiale", "petit déjeuner", "parking"],
+  "nice_to_have": ["club enfants", "restaurant", "cuisine"],
+  "adults": 2,
+  "children": 4,
+  "rooms": 2,
+  "vibe": "familial",
+  "date_range": ["2026-07-25", "2026-07-30"]
+}
+
+Réponds UNIQUEMENT avec le JSON."""
                     },
                     {
                         "role": "user",
@@ -73,12 +161,12 @@ async def _analyze_with_deepseek(query: str) -> Dict[str, Any]:
                     }
                 ],
                 "temperature": 0.1,
-                "max_tokens": 500
+                "max_tokens": 800
             }
         )
         
         if response.status_code != 200:
-            raise Exception(f"DeepSeek API error: {response.status_code}")
+            raise Exception(f"DeepSeek error: {response.status_code}")
         
         data = response.json()
         content = data["choices"][0]["message"]["content"]
@@ -89,200 +177,219 @@ async def _analyze_with_deepseek(query: str) -> Dict[str, Any]:
             result["raw_query"] = query
             return result
         
-        raise Exception("Aucun JSON trouvé dans la réponse")
+        raise Exception("No JSON found")
 
 
-def _analyze_basic(query: str) -> Dict[str, Any]:
-    """Analyse basique avancée sans API externe"""
+def _analyze_advanced(query: str) -> Dict[str, Any]:
+    """Analyse avancée sans API"""
     query_lower = query.lower()
     
-    # ===== Détection du type de voyage =====
-    trip_type = "leisure"
-    vibe = "confort"
+    # ===== 1. Détection du persona =====
+    detected_persona = "leisure"
+    confidence = 0
     
-    # Mots-clés par type
-    business_keywords = ["business", "affaires", "conférence", "réunion", "travail", "client", "pro"]
-    romantic_keywords = ["romantique", "couple", "amoureux", "lune de miel", "anniversaire", "week-end", "escapade"]
-    family_keywords = ["famille", "enfant", "enfants", "familial", "bébé", "maman", "papa", "chambre", "appartement"]
-    backpacker_keywords = ["backpacker", "auberge", "jeunesse", "pas cher", "budget", "solo"]
+    for persona, config in PERSONAS.items():
+        for keyword in config["keywords"]:
+            if keyword in query_lower:
+                detected_persona = persona
+                confidence += 1
+                break
     
-    if any(word in query_lower for word in business_keywords):
-        trip_type = "business"
-        vibe = "luxe"
-    elif any(word in query_lower for word in romantic_keywords):
-        trip_type = "romantic"
-        vibe = "confort"
-    elif any(word in query_lower for word in family_keywords):
-        trip_type = "family"
-        vibe = "familial"
-    elif any(word in query_lower for word in backpacker_keywords):
-        trip_type = "backpacker"
-        vibe = "budget"
+    # Si plusieurs personas détectés, prendre le plus pertinent
+    if confidence > 1:
+        # Priorité: family > business > romantic > luxury > backpacker
+        priority = ["family", "business", "romantic", "luxury", "backpacker"]
+        for p in priority:
+            if p in query_lower:
+                detected_persona = p
+                break
     
-    # ===== Détection du nombre de personnes =====
+    # ===== 2. Détection des nombres =====
     adults = 2
     children = 0
     rooms = 1
     
-    # Recherche des nombres
-    adult_matches = re.findall(r'(\d+)\s*(adulte|adultes|personne|personnes|pax)', query_lower)
-    if adult_matches:
-        adults = int(adult_matches[0][0])
-    
-    child_matches = re.findall(r'(\d+)\s*(enfant|enfants|ans)', query_lower)
-    if child_matches:
-        children = sum(int(m[0]) for m in child_matches)
-        # Si des enfants sont détectés, c'est une famille
-        if children > 0 and trip_type != "family":
-            trip_type = "family"
-    
-    # Détection du nombre de chambres
-    room_matches = re.findall(r'(\d+)\s*(chambre|chambres)', query_lower)
-    if room_matches:
-        rooms = int(room_matches[0][0])
-    
-    # Ajustement du nombre de chambres pour les familles
-    if trip_type == "family" and rooms == 1 and children > 0:
-        rooms = 2  # Par défaut 2 chambres pour une famille
-    
-    # ===== Détection du budget =====
-    budget = None
-    budget_matches = re.findall(r'(\d+)\s*[€$£]', query_lower)
-    if budget_matches:
-        budget = int(budget_matches[0])
-    elif "pas cher" in query_lower or "budget" in query_lower:
-        budget = 100  # Budget serré
-    elif "luxe" in query_lower or "luxury" in query_lower:
-        budget = 500
-    
-    # ===== Détection des dates =====
-    checkin = None
-    checkout = None
-    
-    date_match = re.search(r'(\d{1,2})\s*(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s*(\d{4})', query_lower)
-    if date_match:
-        months = {"janvier": "01", "février": "02", "mars": "03", "avril": "04", "mai": "05", "juin": "06",
-                  "juillet": "07", "août": "08", "septembre": "09", "octobre": "10", "novembre": "11", "décembre": "12"}
-        day, month, year = date_match.groups()
-        checkin = f"{year}-{months[month]}-{day.zfill(2)}"
-        
-        # Recherche de la date de checkout
-        checkout_match = re.search(r'au\s+(\d{1,2})\s*(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)', query_lower)
-        if checkout_match:
-            day_out, month_out = checkout_match.groups()
-            checkout = f"{year}-{months[month_out]}-{day_out.zfill(2)}"
-        else:
-            # Par défaut : +1 nuit
-            from datetime import datetime, timedelta
-            checkin_date = datetime.strptime(checkin, "%Y-%m-%d")
-            checkout_date = checkin_date + timedelta(days=1)
-            checkout = checkout_date.strftime("%Y-%m-%d")
-    
-    # ===== Détection de la destination =====
-    destination = "Paris"
-    lat = 48.8566
-    lng = 2.3522
-    
-    cities = {
-        "paris": (48.8566, 2.3522),
-        "londres": (51.5074, -0.1278),
-        "new york": (40.7128, -74.0060),
-        "barcelone": (41.3851, 2.1734),
-        "rome": (41.9028, 12.4964),
-        "berlin": (52.5200, 13.4050),
-        "venise": (45.4408, 12.3155),
-        "amsterdam": (52.3676, 4.9041),
-        "bruxelles": (50.8503, 4.3517),
-        "marseille": (43.2965, 5.3698),
-        "lyon": (45.7640, 4.8357),
-        "nice": (43.7102, 7.2620),
-        "bordeaux": (44.8378, -0.5792),
-        "toulouse": (43.6047, 1.4442),
-        "strasbourg": (48.5734, 7.7521),
-        "nantes": (47.2184, -1.5536),
-        "montpellier": (43.6108, 3.8767),
-        "lille": (50.6292, 3.0573),
-        "rennes": (48.1173, -1.6778),
-        "reims": (49.2583, 4.0317),
-        "saint denis": (48.9362, 2.3574),
-        "creteil": (48.7907, 2.4528),
-        "versailles": (48.8014, 2.1301)
-    }
-    
-    for city, (c_lat, c_lng) in cities.items():
-        if city in query_lower:
-            destination = city.capitalize()
-            lat = c_lat
-            lng = c_lng
+    # Adultes
+    adult_patterns = [
+        r'(\d+)\s*(adulte|adultes)',
+        r'(\d+)\s*(personne|personnes|pax)'
+    ]
+    for pattern in adult_patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            adults = int(match.group(1))
             break
     
-    # ===== Détermination des must_have =====
-    must_have = []
+    # Enfants
+    child_patterns = [
+        r'(\d+)\s*(enfant|enfants)',
+        r'(\d+)\s*(ans)\s*(?!adulte)',
+        r'(\d+)\s*(bébé|bébés|nouveau-né)'
+    ]
+    child_ages = []
+    for pattern in child_patterns:
+        matches = re.findall(pattern, query_lower)
+        for match in matches:
+            if isinstance(match, tuple):
+                children += int(match[0])
+                child_ages.append(int(match[0]))
+            else:
+                children += int(match)
     
-    # Équipements généraux
-    if "wifi" in query_lower:
-        must_have.append("wifi")
-    if "parking" in query_lower:
-        must_have.append("parking")
-    if "piscine" in query_lower or "pool" in query_lower:
-        must_have.append("piscine")
-    if "spa" in query_lower:
-        must_have.append("spa")
-    if "restaurant" in query_lower:
-        must_have.append("restaurant")
-    if "petit déjeuner" in query_lower or "breakfast" in query_lower:
-        must_have.append("petit déjeuner")
+    # Chambres
+    room_match = re.search(r'(\d+)\s*(chambre|chambres)', query_lower)
+    if room_match:
+        rooms = int(room_match.group(1))
     
-    # Équipements spécifiques au type de voyage
-    if trip_type == "business":
-        must_have.extend(["wifi haut débit", "business center", "salle de réunion"])
-    elif trip_type == "romantic":
-        must_have.extend(["chambre double", "vue"])
-    elif trip_type == "family":
-        must_have.extend(["chambre familiale", "parking"])
-        if children > 0:
-            must_have.append("club enfants")
+    # ===== 3. Détection du budget =====
+    budget = None
+    budget_patterns = [
+        r'(\d+)\s*[€$£]',
+        r'(\d+)\s*(euros|euro|dollars|dollar)',
+        r'budget\s*de\s*(\d+)',
+        r'(\d+)\s*(euros?|€)'
+    ]
+    for pattern in budget_patterns:
+        match = re.search(pattern, query_lower)
+        if match:
+            budget = int(match.group(1))
+            break
     
-    # ===== Construction du résultat =====
-    return {
-        "trip_type": trip_type,
-        "destination": destination,
-        "budget": budget or (500 if trip_type == "business" else 250 if trip_type == "romantic" else 200 if trip_type == "family" else 150),
-        "currency": "EUR",
-        "lat": lat,
-        "lng": lng,
-        "must_have": must_have,
-        "checkin": checkin or "",
-        "checkout": checkout or "",
-        "adults": adults,
-        "children": children,
-        "rooms": rooms,
-        "vibe": vibe,
-        "raw_query": query
-    }
-
-
-def extract_amenities(text: str) -> list:
-    """Extrait les équipements souhaités d'un texte"""
+    # ===== 4. Détection de la destination =====
+    destination = "Paris"
+    city_data = CITY_KNOWLEDGE["paris"]
+    
+    for city, data in CITY_KNOWLEDGE.items():
+        if city in query_lower:
+            destination = city.capitalize()
+            city_data = data
+            break
+    
+    # ===== 5. Détection des dates =====
+    checkin, checkout = _extract_dates(query_lower)
+    
+    # ===== 6. Détermination des must_have =====
+    persona_config = PERSONAS.get(detected_persona, PERSONAS["leisure"])
+    must_have = persona_config["must_have"].copy()
+    nice_to_have = persona_config["nice_to_have"].copy()
+    
+    # Ajouter les équipements spécifiques mentionnés
     amenities_keywords = {
         "wifi": ["wifi", "internet", "connexion"],
         "piscine": ["piscine", "pool", "bassin"],
-        "spa": ["spa", "bien-être", "massage", "sauna"],
-        "restaurant": ["restaurant", "gastronomique", "dîner"],
+        "spa": ["spa", "bien-être", "massage", "sauna", "jacuzzi"],
+        "restaurant": ["restaurant", "gastronomique", "dîner", "brasserie"],
         "parking": ["parking", "stationnement", "garage"],
         "vue": ["vue", "balcon", "terrasse", "panorama"],
         "calme": ["calme", "silencieux", "tranquille"],
         "climatisation": ["climatisation", "air conditionné", "clim"],
-        "petit-déjeuner": ["petit-déjeuner", "breakfast", "brunch"],
-        "business": ["business center", "salle de réunion", "coworking"],
-        "familial": ["chambre familiale", "club enfants", "babysitting"],
-        "luxe": ["concierge", "butler", "suite", "premium", "vip"]
+        "petit déjeuner": ["petit-déjeuner", "breakfast", "brunch", "pdj"],
+        "business center": ["business center", "salle de réunion", "coworking"],
+        "club enfants": ["club enfants", "kids club", "children"],
+        "cuisine": ["cuisine", "kitchen", "appartement"],
+        "concierge": ["concierge", "butler", "service"]
     }
     
-    text_lower = text.lower()
-    found = []
     for amenity, keywords in amenities_keywords.items():
-        if any(kw in text_lower for kw in keywords):
-            found.append(amenity)
+        if any(kw in query_lower for kw in keywords):
+            if amenity not in must_have:
+                must_have.append(amenity)
     
-    return found
+    # ===== 7. Ajustement pour les familles =====
+    if detected_persona == "family" and rooms == 1 and children > 0:
+        rooms = 2  # Par défaut 2 chambres pour une famille
+    
+    # ===== 8. Construction du résultat =====
+    result = {
+        "trip_type": detected_persona,
+        "destination": destination,
+        "budget": budget or (city_data.get("budget_avg", 250) * PERSONAS.get(detected_persona, PERSONAS["leisure"]).get("budget_multiplier", 1)),
+        "currency": "EUR",
+        "lat": city_data.get("lat", 48.8566),
+        "lng": city_data.get("lng", 2.3522),
+        "must_have": must_have,
+        "nice_to_have": nice_to_have,
+        "adults": adults,
+        "children": children,
+        "rooms": rooms,
+        "vibe": persona_config.get("vibe", "confort"),
+        "checkin": checkin or "",
+        "checkout": checkout or "",
+        "raw_query": query,
+        "persona_confidence": confidence
+    }
+    
+    logger.info(f"🧠 Analyse avancée: {result}")
+    return result
+
+
+def _extract_dates(query: str):
+    """Extrait les dates d'une requête"""
+    checkin = None
+    checkout = None
+    
+    months = {
+        "janvier": "01", "février": "02", "mars": "03", "avril": "04",
+        "mai": "05", "juin": "06", "juillet": "07", "août": "08",
+        "septembre": "09", "octobre": "10", "novembre": "11", "décembre": "12"
+    }
+    
+    # Format: "du 25 au 30 juillet 2026"
+    match = re.search(r'du\s+(\d{1,2})\s+(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s*(\d{4})?\s+au\s+(\d{1,2})\s+(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s*(\d{4})?', query)
+    if match:
+        day_in, month_in, year_in, day_out, month_out, year_out = match.groups()
+        year_in = year_in or "2026"
+        year_out = year_out or year_in
+        checkin = f"{year_in}-{months[month_in]}-{day_in.zfill(2)}"
+        checkout = f"{year_out}-{months[month_out]}-{day_out.zfill(2)}"
+        return checkin, checkout
+    
+    # Format: "25 au 30 juillet"
+    match = re.search(r'(\d{1,2})\s+au\s+(\d{1,2})\s+(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s*(\d{4})?', query)
+    if match:
+        day_in, day_out, month, year = match.groups()
+        year = year or "2026"
+        checkin = f"{year}-{months[month]}-{day_in.zfill(2)}"
+        checkout = f"{year}-{months[month]}-{day_out.zfill(2)}"
+        return checkin, checkout
+    
+    # Format: "25-30 juillet"
+    match = re.search(r'(\d{1,2})[-–](\d{1,2})\s+(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s*(\d{4})?', query)
+    if match:
+        day_in, day_out, month, year = match.groups()
+        year = year or "2026"
+        checkin = f"{year}-{months[month]}-{day_in.zfill(2)}"
+        checkout = f"{year}-{months[month]}-{day_out.zfill(2)}"
+        return checkin, checkout
+    
+    return None, None
+
+
+def _enrich_with_knowledge(result: Dict, query: str) -> Dict:
+    """Enrichit le résultat avec la base de connaissances"""
+    destination = result.get("destination", "Paris").lower()
+    city_data = CITY_KNOWLEDGE.get(destination, CITY_KNOWLEDGE["paris"])
+    
+    # Ajouter les coordonnées
+    if "lat" not in result:
+        result["lat"] = city_data.get("lat", 48.8566)
+    if "lng" not in result:
+        result["lng"] = city_data.get("lng", 2.3522)
+    
+    # Ajouter les zones recommandées
+    trip_type = result.get("trip_type", "leisure")
+    if trip_type == "family":
+        result["recommended_areas"] = city_data.get("family_areas", [])
+    elif trip_type == "business":
+        result["recommended_areas"] = city_data.get("business_areas", [])
+    elif trip_type == "romantic":
+        result["recommended_areas"] = city_data.get("romantic_areas", [])
+    elif trip_type == "backpacker":
+        result["recommended_areas"] = city_data.get("backpacker_areas", [])
+    
+    # Ajuster le budget si manquant
+    if not result.get("budget"):
+        result["budget"] = city_data.get("budget_avg", 250)
+    
+    result["raw_query"] = query
+    return result
