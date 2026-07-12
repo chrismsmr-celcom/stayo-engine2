@@ -1,6 +1,6 @@
 """
 Intent Engine — Compréhension de la requête voyageur
-Version 3.0 - VRAIE intelligence
+Version 3.1 - CORRIGÉE
 """
 
 import json
@@ -93,8 +93,12 @@ CITY_KNOWLEDGE = {
 
 
 async def parse_intent(query: str, traveler_id: str = None) -> Dict[str, Any]:
-    """Analyse la requête avec intelligence"""
+    """
+    Analyse la requête et retourne un dictionnaire d'intention
     
+    Returns:
+        Dict avec les champs: trip_type, destination, budget, must_have, etc.
+    """
     # ===== 1. Essayer DeepSeek (IA) =====
     if DEEPSEEK_KEY:
         try:
@@ -197,7 +201,6 @@ def _analyze_advanced(query: str) -> Dict[str, Any]:
     
     # Si plusieurs personas détectés, prendre le plus pertinent
     if confidence > 1:
-        # Priorité: family > business > romantic > luxury > backpacker
         priority = ["family", "business", "romantic", "luxury", "backpacker"]
         for p in priority:
             if p in query_lower:
@@ -226,13 +229,11 @@ def _analyze_advanced(query: str) -> Dict[str, Any]:
         r'(\d+)\s*(ans)\s*(?!adulte)',
         r'(\d+)\s*(bébé|bébés|nouveau-né)'
     ]
-    child_ages = []
     for pattern in child_patterns:
         matches = re.findall(pattern, query_lower)
         for match in matches:
             if isinstance(match, tuple):
                 children += int(match[0])
-                child_ages.append(int(match[0]))
             else:
                 children += int(match)
     
@@ -240,6 +241,10 @@ def _analyze_advanced(query: str) -> Dict[str, Any]:
     room_match = re.search(r'(\d+)\s*(chambre|chambres)', query_lower)
     if room_match:
         rooms = int(room_match.group(1))
+    
+    # Si famille avec enfants et 1 chambre → 2 chambres
+    if detected_persona == "family" and children > 0 and rooms == 1:
+        rooms = 2
     
     # ===== 3. Détection du budget =====
     budget = None
@@ -295,15 +300,15 @@ def _analyze_advanced(query: str) -> Dict[str, Any]:
             if amenity not in must_have:
                 must_have.append(amenity)
     
-    # ===== 7. Ajustement pour les familles =====
-    if detected_persona == "family" and rooms == 1 and children > 0:
-        rooms = 2  # Par défaut 2 chambres pour une famille
+    # ===== 7. Construction du résultat =====
+    persona_config = PERSONAS.get(detected_persona, PERSONAS["leisure"])
+    budget_multiplier = persona_config.get("budget_multiplier", 1.0)
+    default_budget = city_data.get("budget_avg", 250) * budget_multiplier
     
-    # ===== 8. Construction du résultat =====
     result = {
         "trip_type": detected_persona,
         "destination": destination,
-        "budget": budget or (city_data.get("budget_avg", 250) * PERSONAS.get(detected_persona, PERSONAS["leisure"]).get("budget_multiplier", 1)),
+        "budget": budget or round(default_budget),
         "currency": "EUR",
         "lat": city_data.get("lat", 48.8566),
         "lng": city_data.get("lng", 2.3522),
@@ -316,7 +321,8 @@ def _analyze_advanced(query: str) -> Dict[str, Any]:
         "checkin": checkin or "",
         "checkout": checkout or "",
         "raw_query": query,
-        "persona_confidence": confidence
+        "persona_confidence": confidence,
+        "recommended_areas": city_data.get(f"{detected_persona}_areas", [])
     }
     
     logger.info(f"🧠 Analyse avancée: {result}")
@@ -378,14 +384,9 @@ def _enrich_with_knowledge(result: Dict, query: str) -> Dict:
     
     # Ajouter les zones recommandées
     trip_type = result.get("trip_type", "leisure")
-    if trip_type == "family":
-        result["recommended_areas"] = city_data.get("family_areas", [])
-    elif trip_type == "business":
-        result["recommended_areas"] = city_data.get("business_areas", [])
-    elif trip_type == "romantic":
-        result["recommended_areas"] = city_data.get("romantic_areas", [])
-    elif trip_type == "backpacker":
-        result["recommended_areas"] = city_data.get("backpacker_areas", [])
+    area_key = f"{trip_type}_areas"
+    if area_key in city_data:
+        result["recommended_areas"] = city_data.get(area_key, [])
     
     # Ajuster le budget si manquant
     if not result.get("budget"):
@@ -393,3 +394,33 @@ def _enrich_with_knowledge(result: Dict, query: str) -> Dict:
     
     result["raw_query"] = query
     return result
+
+
+# ============================================================
+# FONCTION D'EXTRACTION D'ÉQUIPEMENTS (pour compatibilité)
+# ============================================================
+
+def extract_amenities(text: str) -> list:
+    """Extrait les équipements souhaités d'un texte"""
+    amenities_keywords = {
+        "wifi": ["wifi", "internet", "connexion"],
+        "piscine": ["piscine", "pool", "bassin"],
+        "spa": ["spa", "bien-être", "massage", "sauna"],
+        "restaurant": ["restaurant", "gastronomique", "dîner"],
+        "parking": ["parking", "stationnement", "garage"],
+        "vue": ["vue", "balcon", "terrasse", "panorama"],
+        "calme": ["calme", "silencieux", "tranquille"],
+        "climatisation": ["climatisation", "air conditionné", "clim"],
+        "petit-déjeuner": ["petit-déjeuner", "breakfast", "brunch"],
+        "business": ["business center", "salle de réunion", "coworking"],
+        "familial": ["chambre familiale", "club enfants", "babysitting"],
+        "luxe": ["concierge", "butler", "suite", "premium", "vip"]
+    }
+    
+    text_lower = text.lower()
+    found = []
+    for amenity, keywords in amenities_keywords.items():
+        if any(kw in text_lower for kw in keywords):
+            found.append(amenity)
+    
+    return found
