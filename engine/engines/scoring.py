@@ -1,6 +1,6 @@
 """
 STAYO Scoring Engine
-Version 2.0 - Modulaire et fiable
+Version 2.1 - Optimisé pour l'agent de voyage
 """
 
 import logging
@@ -34,19 +34,25 @@ async def score_hotels(hotels: list, trip) -> list:
         trip: Objet Trip contenant le contexte
     
     Returns:
-        Liste des hôtels enrichis avec scores
+        Liste des hôtels enrichis avec scores (filtrée)
     """
     if not hotels:
         return []
     
-    # ✅ CORRECTION: Accès direct aux attributs, pas .get()
+    # Déterminer le type de voyage
     trip_type = trip.intent.trip_type if hasattr(trip.intent, 'trip_type') else "leisure"
     weights = _weights(trip_type)
     
     results = []
+    filtered_out = []
     
     for hotel in hotels:
         sh = ScoredHotel(hotel)
+        
+        # ✅ Filtrer les hôtels sans prix
+        if hotel.get("price") is None:
+            filtered_out.append(hotel.get("name", "Inconnu"))
+            continue
         
         # Calculer chaque score
         sh.scores["location"] = _location_score(hotel, trip, sh)
@@ -67,6 +73,19 @@ async def score_hotels(hotels: list, trip) -> list:
         
         sh.total = round(weighted_sum / total_weight, 1) if total_weight > 0 else 0
         
+        # ✅ Bonus pour les hôtels qui correspondent au type de voyage
+        if trip_type == "family" and "family" in str(hotel.get("hotelFacilities", [])).lower():
+            sh.total += 10
+            sh.reasons.append("✅ Idéal pour les familles")
+        
+        if trip_type == "business" and "business" in str(hotel.get("hotelFacilities", [])).lower():
+            sh.total += 10
+            sh.reasons.append("✅ Idéal pour les voyages d'affaires")
+        
+        if trip_type == "romantic" and "spa" in str(hotel.get("hotelFacilities", [])).lower():
+            sh.total += 10
+            sh.reasons.append("✅ Idéal pour un séjour romantique")
+        
         # Calculer la confiance
         sh.confidence = _confidence(hotel, trip)
         
@@ -79,6 +98,10 @@ async def score_hotels(hotels: list, trip) -> list:
         
         results.append(hotel)
     
+    # Log des hôtels filtrés
+    if filtered_out:
+        logger.info(f"❌ {len(filtered_out)} hôtels filtrés (sans prix): {filtered_out[:5]}...")
+    
     # Trier par score, puis confiance, puis rating
     results.sort(
         key=lambda x: (
@@ -89,6 +112,7 @@ async def score_hotels(hotels: list, trip) -> list:
         reverse=True
     )
     
+    logger.info(f"✅ {len(results)} hôtels recommandés après filtrage")
     return results
 
 
@@ -104,30 +128,29 @@ def _location_score(hotel, trip, sh) -> float:
         minutes = 999
     
     if minutes <= 5:
-        sh.reasons.append("À moins de 5 min du lieu principal")
+        sh.reasons.append("📍 À moins de 5 min du lieu principal")
         return 100.0
     elif minutes <= 10:
-        sh.reasons.append("Très proche de votre destination")
+        sh.reasons.append("📍 Très proche de votre destination")
         return 90.0
     elif minutes <= 20:
         return 75.0
     elif minutes <= 30:
-        sh.warnings.append("Temps de trajet moyen")
+        sh.warnings.append("⏱️ Temps de trajet moyen")
         return 55.0
     else:
-        sh.warnings.append(f"Éloigné de votre destination ({minutes} min)")
+        sh.warnings.append(f"⏱️ Éloigné de votre destination ({minutes} min)")
         return 25.0
 
 
 def _price_score(hotel, trip, sh) -> float:
     """Score basé sur le prix par rapport au budget"""
     price = hotel.get("price")
-    # ✅ CORRECTION: Accès direct à l'attribut budget
     budget = trip.context.budget if hasattr(trip.context, 'budget') else None
     
     if price is None:
-        sh.warnings.append("Prix indisponible")
-        return 50.0
+        sh.warnings.append("💰 Prix indisponible")
+        return 0.0  # ← 0 pour filtrer
     
     if budget is None or budget <= 0:
         return 70.0
@@ -135,16 +158,17 @@ def _price_score(hotel, trip, sh) -> float:
     ratio = price / budget
     
     if ratio <= 0.6:
-        sh.reasons.append("Excellent rapport qualité/prix")
+        sh.reasons.append(f"💰 Excellent rapport qualité/prix ({price}€)")
         return 100.0
     elif ratio <= 0.8:
         return 90.0
     elif ratio <= 1.0:
         return 80.0
     elif ratio <= 1.2:
+        sh.warnings.append(f"💰 Léger dépassement de budget")
         return 65.0
     else:
-        sh.warnings.append(f"Au-dessus du budget ({price:.2f} > {budget:.2f})")
+        sh.warnings.append(f"💰 Au-dessus du budget ({price}€ > {budget}€)")
         return 30.0
 
 
@@ -153,38 +177,34 @@ def _quality_score(hotel, sh) -> float:
     rating = hotel.get("rating", 0)
     reviews = hotel.get("reviewCount", 0)
     
-    # Score de base
     if rating > 0:
-        score = rating * 10  # 0-50 pour rating 0-5
+        score = rating * 10
     else:
         score = 30
     
-    # Bonus pour les avis nombreux
     if reviews > 1000:
         score += 20
-        sh.reasons.append("Très nombreux avis positifs")
+        sh.reasons.append("⭐ Très nombreux avis positifs")
     elif reviews > 300:
         score += 10
-        sh.reasons.append("Nombreux avis")
+        sh.reasons.append("⭐ Nombreux avis")
     elif reviews > 100:
         score += 5
     
-    # Bonus pour très bonne note
     if rating >= 4.5:
-        sh.reasons.append("Très bien noté par les voyageurs")
+        sh.reasons.append("⭐ Très bien noté par les voyageurs")
         score += 10
     elif rating >= 4.0:
-        sh.reasons.append("Bien noté par les voyageurs")
+        sh.reasons.append("⭐ Bien noté par les voyageurs")
         score += 5
     elif rating < 2.0 and rating > 0:
-        sh.warnings.append("Note faible")
+        sh.warnings.append("⭐ Note faible")
     
     return min(score, 100)
 
 
 def _preferences_score(hotel, trip, sh) -> float:
     """Score basé sur les préférences du voyageur"""
-    # ✅ CORRECTION: Récupérer les préférences depuis l'intent
     preferences = []
     if hasattr(trip.intent, 'must_have'):
         preferences = trip.intent.must_have or []
@@ -192,27 +212,26 @@ def _preferences_score(hotel, trip, sh) -> float:
         preferences = trip.intent.preferences or []
     
     if not preferences:
-        return 70.0
+        return 60.0
     
     facilities = [f.lower() for f in hotel.get("hotelFacilities", [])]
     
-    score = 60
+    score = 50
     matched = 0
     
     for pref in preferences:
         pref_lower = pref.lower()
         if any(pref_lower in f for f in facilities):
-            score += 10
+            score += 15
             matched += 1
-            sh.reasons.append(f"{pref} disponible")
+            sh.reasons.append(f"✅ {pref} disponible")
         else:
-            score -= 5
-            sh.warnings.append(f"Pas de {pref}")
+            score -= 10
+            sh.warnings.append(f"❌ Pas de {pref}")
     
-    # Bonus si toutes les préférences sont satisfaites
     if matched == len(preferences) and len(preferences) > 0:
-        score += 10
-        sh.reasons.append("Toutes vos préférences sont satisfaites")
+        score += 15
+        sh.reasons.append("✅ Toutes vos préférences sont satisfaites")
     
     return max(0, min(score, 100))
 
@@ -221,7 +240,7 @@ def _transport_score(hotel, sh) -> float:
     """Score basé sur les options de transport disponibles"""
     facilities = [f.lower() for f in hotel.get("hotelFacilities", [])]
     
-    score = 40  # Score de base
+    score = 40
     
     transport_keywords = {
         "metro": 15,
@@ -239,7 +258,7 @@ def _transport_score(hotel, sh) -> float:
         if any(keyword in f for f in facilities):
             score += points
             if points >= 12:
-                sh.reasons.append(f"Accès {keyword} disponible")
+                sh.reasons.append(f"🚇 Accès {keyword} disponible")
     
     return min(score, 100)
 
@@ -247,7 +266,6 @@ def _transport_score(hotel, sh) -> float:
 def _experience_score(hotel, trip, sh) -> float:
     """Score basé sur l'expérience spécifique au type de voyage"""
     facilities = [f.lower() for f in hotel.get("hotelFacilities", [])]
-    # ✅ CORRECTION: Accès direct à l'attribut trip_type
     trip_type = trip.intent.trip_type if hasattr(trip.intent, 'trip_type') else "leisure"
     
     score = 50
@@ -255,75 +273,75 @@ def _experience_score(hotel, trip, sh) -> float:
     if trip_type == "business":
         if any("wifi" in f for f in facilities):
             score += 15
-            sh.reasons.append("Wi-Fi disponible")
+            sh.reasons.append("💼 Wi-Fi disponible")
         if any("business" in f for f in facilities):
             score += 15
-            sh.reasons.append("Équipé pour les voyageurs d'affaires")
+            sh.reasons.append("💼 Équipé pour les voyageurs d'affaires")
         if any("meeting" in f for f in facilities):
             score += 10
-            sh.reasons.append("Salles de réunion disponibles")
+            sh.reasons.append("💼 Salles de réunion disponibles")
         if any("quiet" in f for f in facilities) or any("calme" in f for f in facilities):
             score += 10
-            sh.reasons.append("Environnement calme")
+            sh.reasons.append("💼 Environnement calme")
             
     elif trip_type == "romantic":
         if any("spa" in f for f in facilities):
             score += 20
-            sh.reasons.append("Spa pour un moment détente")
+            sh.reasons.append("❤️ Spa pour un moment détente")
         if any("restaurant" in f for f in facilities):
             score += 15
-            sh.reasons.append("Restaurant sur place")
+            sh.reasons.append("❤️ Restaurant sur place")
         if any("bar" in f for f in facilities):
             score += 10
-            sh.reasons.append("Bar pour un verre en amoureux")
+            sh.reasons.append("❤️ Bar pour un verre en amoureux")
         if any("view" in f for f in facilities) or any("vue" in f for f in facilities):
             score += 15
-            sh.reasons.append("Vue magnifique")
+            sh.reasons.append("❤️ Vue magnifique")
             
     elif trip_type == "family":
         if any("pool" in f for f in facilities):
             score += 20
-            sh.reasons.append("Piscine pour toute la famille")
+            sh.reasons.append("👨‍👩‍👧‍👦 Piscine pour toute la famille")
         if any("family" in f for f in facilities):
             score += 15
-            sh.reasons.append("Adapté aux familles")
+            sh.reasons.append("👨‍👩‍👧‍👦 Adapté aux familles")
         if any("kids" in f for f in facilities) or any("children" in f for f in facilities):
             score += 15
-            sh.reasons.append("Activités pour enfants")
+            sh.reasons.append("👨‍👩‍👧‍👦 Activités pour enfants")
         if any("parking" in f for f in facilities):
             score += 10
-            sh.reasons.append("Parking disponible")
+            sh.reasons.append("👨‍👩‍👧‍👦 Parking disponible")
             
     elif trip_type == "backpacker":
         if any("wifi" in f for f in facilities):
             score += 20
-            sh.reasons.append("Wi-Fi gratuit")
+            sh.reasons.append("🎒 Wi-Fi gratuit")
         if any("luggage" in f for f in facilities) or any("bagagerie" in f for f in facilities):
             score += 15
-            sh.reasons.append("Bagagerie disponible")
+            sh.reasons.append("🎒 Bagagerie disponible")
         if any("kitchen" in f for f in facilities) or any("cuisine" in f for f in facilities):
             score += 15
-            sh.reasons.append("Cuisine pour cuisiner")
+            sh.reasons.append("🎒 Cuisine pour cuisiner")
         if any("social" in f for f in facilities) or any("bar" in f for f in facilities):
             score += 10
-            sh.reasons.append("Ambiance sociale")
+            sh.reasons.append("🎒 Ambiance sociale")
     
     else:  # leisure
         if any("pool" in f for f in facilities):
             score += 15
-            sh.reasons.append("Piscine disponible")
+            sh.reasons.append("🏊 Piscine disponible")
         if any("restaurant" in f for f in facilities):
             score += 10
-            sh.reasons.append("Restaurant sur place")
+            sh.reasons.append("🍽️ Restaurant sur place")
         if any("bar" in f for f in facilities):
             score += 10
-            sh.reasons.append("Bar disponible")
+            sh.reasons.append("🍷 Bar disponible")
         if any("gym" in f for f in facilities) or any("fitness" in f for f in facilities):
             score += 10
-            sh.reasons.append("Salle de sport")
+            sh.reasons.append("🏋️ Salle de sport")
         if any("spa" in f for f in facilities):
             score += 10
-            sh.reasons.append("Spa disponible")
+            sh.reasons.append("🧖 Spa disponible")
     
     return min(score, 100)
 
@@ -337,10 +355,10 @@ def _weights(trip_type: str) -> dict:
     
     weights_map = {
         "business": {
-            "location": 3,
+            "location": 2.5,
             "price": 1.5,
-            "quality": 1.5,
-            "preferences": 2,
+            "quality": 2,
+            "preferences": 3,
             "transport": 2.5,
             "experience": 3
         },
@@ -348,15 +366,15 @@ def _weights(trip_type: str) -> dict:
             "location": 1.5,
             "price": 1,
             "quality": 2,
-            "preferences": 2,
+            "preferences": 2.5,
             "transport": 1,
             "experience": 3
         },
         "family": {
             "location": 2,
-            "price": 2,
+            "price": 2.5,
             "quality": 1.5,
-            "preferences": 2,
+            "preferences": 3,
             "transport": 1.5,
             "experience": 3
         },
@@ -389,7 +407,6 @@ def _confidence(hotel, trip) -> float:
     """Calcule le niveau de confiance du score"""
     confidence = 100
     
-    # ✅ CORRECTION: Accès direct aux attributs
     budget = trip.context.budget if hasattr(trip.context, 'budget') else None
     event_lat = trip.context.event_lat if hasattr(trip.context, 'event_lat') else None
     event_lng = trip.context.event_lng if hasattr(trip.context, 'event_lng') else None
@@ -403,7 +420,7 @@ def _confidence(hotel, trip) -> float:
         logger.debug("Confiance réduite: coordonnées manquantes")
     
     if hotel.get("price") is None:
-        confidence -= 20
+        confidence -= 30
         logger.debug("Confiance réduite: prix manquant")
     
     if hotel.get("rating") is None or hotel.get("rating") == 0:
@@ -414,7 +431,6 @@ def _confidence(hotel, trip) -> float:
         confidence -= 20
         logger.debug("Confiance réduite: distance manquante")
     
-    # Pénalité si peu d'avis
     review_count = hotel.get("reviewCount", 0)
     if review_count < 10:
         confidence -= 10
