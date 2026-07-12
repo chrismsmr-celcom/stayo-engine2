@@ -1,6 +1,6 @@
 """
 Hotel Features Engine - Extraction des caractéristiques des hôtels
-Version 1.0
+Version 1.1 - Corrigée
 """
 
 import logging
@@ -22,23 +22,35 @@ def extract_features(hotel: Dict[str, Any]) -> Dict[str, Any]:
     if not hotel:
         return _default_features()
     
-    # Récupérer les équipements
+    # === Récupérer les équipements (plusieurs sources) ===
     facilities = hotel.get("hotelFacilities", [])
+    
+    # Si 'hotelFacilities' est vide, essayer d'autres champs
+    if not facilities:
+        # Essayer depuis 'features' (si présent)
+        facilities = hotel.get("features", [])
+    
+    # Essayer depuis les tags (si présents dans la réponse AI)
+    if not facilities:
+        tags = hotel.get("tags", [])
+        if tags:
+            facilities = tags
+    
     if isinstance(facilities, str):
         facilities = [facilities]
     elif not isinstance(facilities, list):
         facilities = []
     
-    facilities_lower = [f.lower() for f in facilities]
+    facilities_lower = [f.lower() for f in facilities if f]
     
-    # Calculer les scores
+    # === Calculer les scores (même sans équipements) ===
     features = {
         # Scores par type de voyage
+        "luxury_score": _calculate_luxury_score(facilities_lower),
         "business_score": _calculate_business_score(facilities_lower),
         "romantic_score": _calculate_romantic_score(facilities_lower),
         "family_score": _calculate_family_score(facilities_lower),
         "comfort_score": _calculate_comfort_score(facilities_lower),
-        "luxury_score": _calculate_luxury_score(facilities_lower),
         
         # Caractéristiques booléennes
         "has_wifi": any("wifi" in f for f in facilities_lower),
@@ -48,7 +60,7 @@ def extract_features(hotel: Dict[str, Any]) -> Dict[str, Any]:
         "has_parking": any("parking" in f for f in facilities_lower),
         "has_gym": any("gym" in f for f in facilities_lower) or any("fitness" in f for f in facilities_lower),
         "has_business_center": any("business" in f for f in facilities_lower) or any("meeting" in f for f in facilities_lower),
-        "is_family_friendly": any("family" in f for f in facilities_lower) or any("kids" in f for f in facilities_lower),
+        "is_family_friendly": any("family" in f for f in facilities_lower) or any("kids" in f for f in facilities_lower) or any("children" in f for f in facilities_lower),
         "has_airport_shuttle": any("shuttle" in f for f in facilities_lower) or any("airport" in f for f in facilities_lower),
         "has_view": any("view" in f for f in facilities_lower) or any("vue" in f for f in facilities_lower) or any("balcony" in f for f in facilities_lower),
         
@@ -59,7 +71,7 @@ def extract_features(hotel: Dict[str, Any]) -> Dict[str, Any]:
         "stars": hotel.get("stars", 0),
     }
     
-    logger.debug(f"Features extraites pour {hotel.get('name', 'inconnu')}")
+    logger.debug(f"Features extraites pour {hotel.get('name', 'inconnu')}: {len(facilities)} équipements")
     
     return features
 
@@ -67,11 +79,11 @@ def extract_features(hotel: Dict[str, Any]) -> Dict[str, Any]:
 def _default_features() -> Dict[str, Any]:
     """Retourne des features par défaut"""
     return {
+        "luxury_score": 50,
         "business_score": 50,
         "romantic_score": 50,
         "family_score": 50,
         "comfort_score": 50,
-        "luxury_score": 50,
         "has_wifi": False,
         "has_pool": False,
         "has_spa": False,
