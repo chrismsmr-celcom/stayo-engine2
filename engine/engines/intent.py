@@ -216,27 +216,28 @@ for keyword in keywords:
 
 def _fill_trip(trip: Trip, data: dict):
 
-    trip.context.trip_type = data.get("trip_type", "leisure")
+    # ---------- Intent ----------
+    trip.intent.trip_type = data.get("trip_type", "leisure")
+    trip.intent.goal = data.get("goal", "")
 
-    trip.context.destination = data.get("destination", "")
+    preferences = data.get("preferences", [])
+    trip.intent.must_have = preferences
+    trip.intent.nice_to_have = []
+    trip.intent.avoid = []
 
+    # ---------- Context ----------
     trip.context.event = data.get("destination", "")
-
-    trip.context.event_lat = data.get("destination_lat", 48.8566)
-
-    trip.context.event_lng = data.get("destination_lng", 2.3522)
-
-    trip.context.budget = data.get("budget", 250)
-
-    trip.context.currency = data.get("currency", "EUR")
+    trip.context.event_lat = data.get("destination_lat")
+    trip.context.event_lng = data.get("destination_lng")
 
     trip.context.checkin = data.get("checkin")
-
     trip.context.checkout = data.get("checkout")
 
     trip.context.adults = data.get("adults", 1)
 
-    trip.context.preferences = data.get("preferences", [])
+    trip.context.currency = data.get("currency", "EUR")
+    trip.context.budget = data.get("budget", 200)
 
-    trip.context.confidence = data.get("confidence", 60)
+    # ---------- Metadata ----------
+    trip.confidence = data.get("confidence", 60)
 
