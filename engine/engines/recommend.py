@@ -19,42 +19,58 @@ logger = logging.getLogger(__name__)
 
 async def recommend(
     query: str,
-    traveler_id: str = None
+    traveler_id: str | None = None
 ) -> dict:
+    """
+    Point d'entrée principal du moteur STAYO.
+    """
 
     start = time.perf_counter()
 
     try:
         logger.info("Starting recommendation engine")
 
-        # 1 - Comprendre le voyage
+        # -------------------------------------------------
+        # 1. Compréhension de la requête
+        # -------------------------------------------------
+
         trip = await parse_intent(
             query=query,
             traveler_id=traveler_id
         )
 
-        # 2 - Recherche des hôtels
+        # -------------------------------------------------
+        # 2. Recherche des hôtels
+        # -------------------------------------------------
+
         hotels = await fetch_hotels(
-            trip.context.event_lat,
-            trip.context.event_lng,
-            trip.context.checkin,
-            trip.context.checkout,
-            trip.context.adults,
-            trip.context.currency
+            lat=trip.context.event_lat,
+            lng=trip.context.event_lng,
+            checkin=trip.context.checkin,
+            checkout=trip.context.checkout,
+            adults=trip.context.adults,
+            currency=trip.context.currency
         )
 
+        trip.hotels = hotels
         trip.total_found = len(hotels)
 
         if not hotels:
             return _empty(trip)
 
-        # 3 - Calcul des distances
+        # -------------------------------------------------
+        # 3. Calcul des distances
+        # -------------------------------------------------
+
         hotels = await enrich_distances(
             hotels,
             trip
         )
 
-        # 4 - Calcul du score
+        # -------------------------------------------------
+        # 4. Calcul des scores
+        # -------------------------------------------------
+
         scored = score_hotels(
             trip,
             hotels
@@ -63,23 +79,32 @@ async def recommend(
         trip.scored_hotels = scored
         trip.recommendations = scored[:5]
 
-        # 5 - Explications
+        # -------------------------------------------------
+        # 5. Explications
+        # -------------------------------------------------
+
         trip.explanations = explain_recommendations(
-            scored[:5],
+            trip.recommendations,
             trip
         )
 
-        # 6 - Activités
+        # -------------------------------------------------
+        # 6. Activités recommandées
+        # -------------------------------------------------
+
         trip.suggested_activities = suggest_activities(trip)
 
-        # 7 - Temps d'exécution
+        # -------------------------------------------------
+        # 7. Temps d'exécution
+        # -------------------------------------------------
+
         trip.processing_time_ms = round(
             (time.perf_counter() - start) * 1000,
             2
         )
 
         logger.info(
-            "Recommendation completed in %s ms",
+            "Recommendation completed in %.2f ms",
             trip.processing_time_ms
         )
 
@@ -91,10 +116,18 @@ async def recommend(
 
 
 def _empty(trip: Trip) -> dict:
-    trip.processing_time_ms = 0
+    """
+    Réponse lorsqu'aucun hôtel n'est trouvé.
+    """
+
+    trip.hotels = []
+    trip.recommendations = []
+    trip.processing_time_ms = round(
+        (time.perf_counter()) * 0,
+        2
+    )
 
     data = trip.to_dict()
-    data["recommendations"] = []
     data["message"] = "No hotel found."
 
     return data
