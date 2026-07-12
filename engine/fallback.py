@@ -1,7 +1,4 @@
-"""
-fallback.py - Plan de secours local (sans API)
-Regex déterministe pour analyse basique
-"""
+# engine/fallback.py - Version corrigée
 
 import re
 from datetime import datetime
@@ -111,6 +108,7 @@ def extract_dates_fallback(query: str) -> Tuple[Optional[str], Optional[str]]:
     return None, None
 
 
+# ✅ CORRECTION : run_basic_analysis ne prend qu'un seul argument
 def run_basic_analysis(query: str) -> Dict[str, Any]:
     """
     Plan de secours local (100% offline)
