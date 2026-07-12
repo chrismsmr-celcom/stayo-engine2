@@ -1,6 +1,6 @@
 """
 STAYO Recommendation Engine
-Orchestrateur principal.
+Orchestrateur principal - Version 2.1
 """
 
 import time
@@ -27,6 +27,7 @@ async def recommend(
     try:
         # ===== 1. Comprendre l'intention =====
         trip = await parse_intent(query, traveler_id)
+        logger.info(f"🎯 Intent détecté: {trip.intent.trip_type}, must_have: {trip.intent.must_have}")
         
         # ===== 2. Appliquer les overrides =====
         if overrides:
@@ -66,21 +67,24 @@ async def recommend(
         # ===== 4. Enrichir avec les distances =====
         hotels = await enrich_distances(hotels, trip)
         
-        # ===== 5. Calculer les scores =====
-        # ✅ CORRECTION 1: Ajout de await
-        # ✅ CORRECTION 2: Ordre des paramètres (hotels, trip)
+        # ===== 5. Calculer les scores (avec filtrage) =====
         scored = await score_hotels(hotels, trip)
         
+        if not scored:
+            return _empty(trip, "Aucun hôtel disponible avec des prix dans votre budget")
+        
         trip.scored_hotels = scored
+        
+        # ===== 6. Sélectionner les 5 meilleurs =====
         trip.recommendations = scored[:5]
         
-        # ===== 6. Générer les explications =====
+        # ===== 7. Générer les explications =====
         trip.explanations = explain_recommendations(
             trip.recommendations,
             trip
         )
         
-        # ===== 7. Suggérer des activités =====
+        # ===== 8. Suggérer des activités =====
         trip.suggested_activities = suggest_activities(trip)
         
         trip.processing_time_ms = round(
@@ -90,13 +94,13 @@ async def recommend(
         
         return trip.to_dict()
         
-    except Exception:
-        logger.exception("Recommendation Engine Error")
+    except Exception as e:
+        logger.exception(f"❌ Recommendation Engine Error: {e}")
         raise
 
 
-def _empty(trip: Trip):
+def _empty(trip: Trip, message: str = "No hotel found."):
     data = trip.to_dict()
     data["recommendations"] = []
-    data["message"] = "No hotel found."
+    data["message"] = message
     return data
