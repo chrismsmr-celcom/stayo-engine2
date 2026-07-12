@@ -10,16 +10,17 @@ Responsabilité :
 """
 
 import os
+import json
 import asyncio
 import httpx
+import logging
 
 from engine.engines.hotel_features import extract_features
 
+logger = logging.getLogger(__name__)
 
 LITEAPI_KEY = os.getenv("LITEAPI_KEY")
-
 LITEAPI_BASE = "https://api.liteapi.travel/v3.0"
-
 
 
 async def fetch_hotels(
@@ -32,907 +33,232 @@ async def fetch_hotels(
     radius=5000,
     limit=200
 ):
-
-
-    async with httpx.AsyncClient(
-        timeout=30
-    ) as client:
-
-
-        hotels = await _search_hotels(
-            client,
-            lat,
-            lng,
-            radius,
-            limit
-        )
-
-
+    """
+    Récupère les hôtels depuis LiteAPI avec leurs prix.
+    
+    Returns:
+        list: Liste des hôtels normalisés avec prix et caractéristiques
+    """
+    async with httpx.AsyncClient(timeout=30) as client:
+        # 1. Rechercher les hôtels
+        hotels = await _search_hotels(client, lat, lng, radius, limit)
         if not hotels:
-
             return []
-
-
-
-        prices = await _fetch_prices(
-            client,
-            hotels,
-            checkin,
-            checkout,
-            adults,
-            currency
-        )
-
-
-
+        
+        # 2. Récupérer les prix
+        prices = await _fetch_prices(client, hotels, checkin, checkout, adults, currency)
+        
+        # 3. Normaliser et enrichir
         normalized = []
-
-
-
         for hotel in hotels:
-
-
             if not hotel.get("latitude"):
-
                 continue
-
-
-
+            
+            # Structure de base
             item = {
-
                 "id": hotel.get("id"),
-
-                "name":
-                    hotel.get(
-                        "name",
-                        "Hotel"
-                    ),
-
-
-                "lat":
-                    float(
-                        hotel["latitude"]
-                    ),
-
-
-                "lng":
-                    float(
-                        hotel["longitude"]
-                    ),
-
-
-                "address":
-                    hotel.get(
-                        "address",
-                        ""
-                    ),
-
-
-                "city":
-                    hotel.get(
-                        "city",
-                        ""
-                    ),
-
-
-                "thumbnail":
-                    hotel.get(
-                        "thumbnail"
-                    ),
-
-
-                "rating":
-                    float(
-                        hotel.get(
-                            "rating",
-                            0
-                        )
-                    ),
-
-
-                "reviewCount":
-                    hotel.get(
-                        "reviewCount",
-                        0
-                    ),
-
-
-                "stars":
-                    hotel.get(
-                        "stars",
-                        0
-                    ),
-
-
-                "price":
-                    prices.get(
-                        hotel["id"]
-                    ),
-
-
-                "currency":
-                    currency,
-
-
-                "hotelFacilities":
-                    hotel.get(
-                        "hotelFacilities",
-                        []
-                    )
-
+                "name": hotel.get("name", "Hotel"),
+                "lat": float(hotel["latitude"]),
+                "lng": float(hotel["longitude"]),
+                "address": hotel.get("address", ""),
+                "city": hotel.get("city", ""),
+                "country": hotel.get("country", ""),
+                "thumbnail": hotel.get("thumbnail") or hotel.get("main_photo"),
+                "rating": float(hotel.get("rating", 0)),
+                "reviewCount": hotel.get("reviewCount", 0),
+                "stars": hotel.get("stars", 0),
+                "price": prices.get(hotel["id"]),
+                "currency": currency,
+                "hotelFacilities": hotel.get("hotelFacilities", []),
             }
-
-
-            item["features"] = extract_features(
-                item
-            )
-
-
-            normalized.append(
-                item
-            )
-
-
-
+            
+            # Extraire les caractéristiques IA
+            item["features"] = extract_features(item)
+            normalized.append(item)
+        
+        logger.info(f"{len(normalized)} hôtels récupérés")
         return normalized
-        # --------------------------------------------------
+
+
+# --------------------------------------------------
 # SEARCH HOTELS
 # --------------------------------------------------
 
-
-async def _search_hotels(
-    client,
-    lat,
-    lng,
-    radius,
-    limit
-):
-
+async def _search_hotels(client, lat, lng, radius, limit):
     """
-    Recherche les hôtels autour
-    d'un point GPS.
+    Recherche les hôtels autour d'un point GPS.
     """
-
     try:
-
         response = await client.get(
-
             f"{LITEAPI_BASE}/data/hotels",
-
             params={
-
                 "latitude": lat,
-
                 "longitude": lng,
-
-                "radius": min(
-                    radius,
-                    50000
-                ),
-
+                "radius": min(radius, 50000),
                 "limit": limit,
-
                 "language": "fr"
-
             },
-
-            headers={
-
-                "X-API-Key":
-                    LITEAPI_KEY
-
-            }
-
+            headers={"X-API-Key": LITEAPI_KEY}
         )
-
-
+        
         if response.status_code != 200:
-
-            print(
-                "LiteAPI hotel search error:",
-                response.status_code
-            )
-
+            logger.error(f"LiteAPI hotel search error: {response.status_code}")
             return []
-
-
-
-        return response.json().get(
-            "data",
-            []
-        )
-
-
-
+        
+        data = response.json()
+        hotels = data.get("data", [])
+        logger.info(f"{len(hotels)} hôtels trouvés")
+        return hotels
+        
     except Exception as e:
-
-        print(
-            "Hotel search exception:",
-            e
-        )
-
+        logger.error(f"Hotel search exception: {e}")
         return []
-
-
-
 
 
 # --------------------------------------------------
 # FETCH PRICES
 # --------------------------------------------------
 
-
-async def _fetch_prices(
-    client,
-    hotels,
-    checkin,
-    checkout,
-    adults,
-    currency
-):
-
+async def _fetch_prices(client, hotels, checkin, checkout, adults, currency):
     """
-    Récupère les prix disponibles.
+    Récupère les prix disponibles pour les hôtels.
     """
-
     prices = {}
-
-
-
-    ids = [
-
-        h["id"]
-
-        for h in hotels[:100]
-
-        if h.get("id")
-
-    ]
-
-
-
+    ids = [h["id"] for h in hotels[:100] if h.get("id")]
+    
     if not ids:
-
         return prices
-
-
-
+    
     try:
-
         response = await client.post(
-
-
             f"{LITEAPI_BASE}/hotels/rates",
-
-
             json={
-
-                "hotelIds":
-                    ids,
-
-
-                "checkin":
-                    checkin,
-
-
-                "checkout":
-                    checkout,
-
-
-                "currency":
-                    currency,
-
-
-                "guestNationality":
-                    "FR",
-
-
-                "occupancies":[
-
-                    {
-
-                        "adults":
-                            adults
-
-                    }
-
-                ],
-
-
-                "maxRatesPerHotel":
-                    1,
-
-
-                "limit":
-                    100,
-
-
-                "timeout":
-                    8
-
+                "hotelIds": ids,
+                "checkin": checkin,
+                "checkout": checkout,
+                "currency": currency,
+                "guestNationality": "FR",
+                "occupancies": [{"adults": adults}],
+                "maxRatesPerHotel": 1,
+                "limit": 100,
+                "timeout": 8
             },
-
-
-            headers={
-
-                "X-API-Key":
-                    LITEAPI_KEY
-
-            }
-
-
+            headers={"X-API-Key": LITEAPI_KEY}
         )
-
-
-
+        
         if response.status_code != 200:
-
+            logger.warning(f"LiteAPI rates error: {response.status_code}")
             return prices
-
-
-
-
-        for hotel in response.json().get(
-            "data",
-            []
-        ):
-
-
-            hotel_id = hotel.get(
-                "hotelId"
-            )
-
-
-            amount = _extract_price(
-                hotel
-            )
-
-
-            if amount:
-
-                prices[hotel_id] = round(
-                    float(amount)
-                )
-
-
-
+        
+        data = response.json()
+        rate_data = data.get("data", [])
+        
+        # Log de débogage pour le premier hôtel
+        if rate_data:
+            sample = rate_data[0]
+            logger.debug(f"Sample rate response: {json.dumps(sample, indent=2)[:500]}")
+        
+        for hotel_rate in rate_data:
+            hotel_id = hotel_rate.get("hotelId")
+            amount = _extract_price(hotel_rate)
+            
+            if amount and hotel_id:
+                prices[hotel_id] = round(float(amount))
+                logger.debug(f"Price for {hotel_id}: {amount}")
+        
+        logger.info(f"{len(prices)} prix récupérés")
+        
     except Exception as e:
-
-        print(
-            "Price error:",
-            e
-        )
-
-
-
+        logger.error(f"Price error: {e}")
+    
     return prices
 
 
-
-
-
 # --------------------------------------------------
-# PRICE EXTRACTOR
+# PRICE EXTRACTOR (Version corrigée)
 # --------------------------------------------------
 
-
-def _extract_price(
-    hotel
-):
-
+def _extract_price(hotel_rate_data: dict):
     """
-    Compatible avec plusieurs
-    formats LiteAPI.
+    Extrait le prix d'une réponse de LiteAPI /hotels/rates
+    Compatible avec les nouvelles structures de données.
     """
-
-
-    room = (
-
-        hotel.get(
-            "roomTypes",
-            [{}]
-
-        )[0]
-
-    )
-
-
-    price = (
-
-        room.get(
-            "offerRetailRate",
-            {}
-        )
-        .get(
-            "amount"
-        )
-
-    )
-
-
-    if price:
-
-        return price
-
-
-
-    rates = room.get(
-        "rates",
-        []
-    )
-
-
-    if rates:
-
-
-        return (
-
-            rates[0]
-            .get(
-                "retailRate",
-                {}
-            )
-            .get(
-                "total",
-                [{}]
-
-            )[0]
-            .get(
-                "amount"
-            )
-
-        )
-
-
-
-    return None
-    """
-STAYO Hotel Features Engine
-
-Transforme les informations hôtel
-en données intelligentes pour le scoring.
-
-Objectif :
-Comprendre le type d'expérience
-que propose un hôtel.
-"""
-
-
-def extract_features(hotel: dict) -> dict:
-
-    facilities = _normalize_text(
-        hotel.get("hotelFacilities", [])
-    )
-
-    name = hotel.get(
-        "name",
-        ""
-    ).lower()
-
-
-    text = " ".join(
-        facilities
-    ) + " " + name
-
-
-
-    return {
-
-        "luxury_score":
-            _luxury_score(text, hotel),
-
-
-        "business_score":
-            _business_score(text),
-
-
-        "romantic_score":
-            _romantic_score(text),
-
-
-        "family_score":
-            _family_score(text),
-
-
-        "wellness_score":
-            _wellness_score(text),
-
-
-        "food_score":
-            _food_score(text),
-
-
-        "transport_score":
-            _transport_score(text),
-
-
-        "comfort_score":
-            _comfort_score(text)
-
-    }
-
-
-
-
-
-# -----------------------------------------
-# NORMALISATION
-# -----------------------------------------
-
-
-def _normalize_text(items):
-
-    if not items:
-
-        return []
-
-
-    result = []
-
-
-    for item in items:
-
-        if isinstance(item, dict):
-
-            value = (
-
-                item.get("name")
-
-                or
-
-                item.get("title")
-
-            )
-
+    if not hotel_rate_data:
+        return None
+    
+    # === Méthode 1: via roomTypes (structure standard) ===
+    room_types = hotel_rate_data.get("roomTypes", [])
+    if room_types:
+        first_room = room_types[0]
+        
+        # 1.1: offerRetailRate (structure directe)
+        offer_rate = first_room.get("offerRetailRate", {})
+        amount = offer_rate.get("amount")
+        if amount:
+            return amount
+        
+        # 1.2: via rates array (structure avec plusieurs taux)
+        rates = first_room.get("rates", [])
+        if rates:
+            first_rate = rates[0]
+            
+            # 1.2.1: retailRate.total (structure standard actuelle)
+            retail = first_rate.get("retailRate", {})
+            total = retail.get("total", [])
+            if total and isinstance(total, list):
+                amount = total[0].get("amount")
+                if amount:
+                    return amount
+            
+            # 1.2.2: retailRate direct (certaines versions)
+            amount = retail.get("amount")
+            if amount:
+                return amount
+            
+            # 1.2.3: rate.total (ancienne structure)
+            rate_total = first_rate.get("total", [])
+            if rate_total and isinstance(rate_total, list):
+                amount = rate_total[0].get("amount")
+                if amount:
+                    return amount
+            
+            # 1.2.4: price direct dans la rate
+            amount = first_rate.get("price")
+            if amount:
+                return amount
+    
+    # === Méthode 2: structure alternative (flat) ===
+    amount = hotel_rate_data.get("amount")
+    if amount:
+        return amount
+    
+    # === Méthode 3: structure avec total direct ===
+    total = hotel_rate_data.get("total")
+    if isinstance(total, dict):
+        amount = total.get("amount")
+        if amount:
+            return amount
+    
+    # === Méthode 4: structure avec retailRate au niveau racine ===
+    retail = hotel_rate_data.get("retailRate", {})
+    amount = retail.get("amount")
+    if amount:
+        return amount
+    
+    total = retail.get("total", [])
+    if total and isinstance(total, list):
+        amount = total[0].get("amount")
+        if amount:
+            return amount
+    
+    # === Méthode 5: recherche dans toutes les clés ===
+    for key, value in hotel_rate_data.items():
+        if isinstance(value, dict):
+            amount = value.get("amount")
+            if amount:
+                return amount
+        elif key in ["amount", "price", "total_amount", "totalPrice"]:
             if value:
-
-                result.append(
-                    value.lower()
-                )
-
-
-        elif isinstance(item, str):
-
-            result.append(
-                item.lower()
-            )
-
-
-    return result
-
-
-
-
-
-# -----------------------------------------
-# LUXE
-# -----------------------------------------
-
-
-def _luxury_score(text, hotel):
-
-    score = 40
-
-
-    luxury_words = [
-
-        "5 star",
-        "five star",
-        "luxury",
-        "concierge",
-        "butler",
-        "executive",
-        "suite",
-        "premium",
-        "vip"
-
-    ]
-
-
-    for word in luxury_words:
-
-        if word in text:
-
-            score += 10
-
-
-
-    stars = hotel.get(
-        "stars",
-        0
-    )
-
-
-    if stars >= 5:
-
-        score += 30
-
-    elif stars >= 4:
-
-        score += 15
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# BUSINESS
-# -----------------------------------------
-
-
-def _business_score(text):
-
-    score = 30
-
-
-    keywords = [
-
-        "business center",
-        "meeting",
-        "conference",
-        "coworking",
-        "wifi",
-        "internet",
-        "workspace",
-        "printer"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 10
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# ROMANTIQUE
-# -----------------------------------------
-
-
-def _romantic_score(text):
-
-    score = 30
-
-
-    keywords = [
-
-        "spa",
-        "wellness",
-        "massage",
-        "view",
-        "sea view",
-        "restaurant",
-        "bar",
-        "pool",
-        "suite"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 10
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# FAMILLE
-# -----------------------------------------
-
-
-def _family_score(text):
-
-    score = 30
-
-
-    keywords = [
-
-        "family",
-        "kids",
-        "children",
-        "baby",
-        "playground",
-        "pool",
-        "connecting rooms"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 12
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# WELLNESS
-# -----------------------------------------
-
-
-def _wellness_score(text):
-
-    score = 20
-
-
-    keywords = [
-
-        "spa",
-        "sauna",
-        "massage",
-        "fitness",
-        "gym",
-        "wellness"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 15
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# RESTAURATION
-# -----------------------------------------
-
-
-def _food_score(text):
-
-    score = 30
-
-
-    keywords = [
-
-        "restaurant",
-        "gastronomic",
-        "chef",
-        "bar",
-        "breakfast",
-        "buffet"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 12
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# TRANSPORT
-# -----------------------------------------
-
-
-def _transport_score(text):
-
-    score = 30
-
-
-    keywords = [
-
-        "airport shuttle",
-        "metro",
-        "subway",
-        "parking",
-        "transfer",
-        "taxi"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 12
-
-
-
-    return min(
-        score,
-        100
-    )
-
-
-
-
-
-# -----------------------------------------
-# CONFORT GENERAL
-# -----------------------------------------
-
-
-def _comfort_score(text):
-
-    score = 40
-
-
-    keywords = [
-
-        "air conditioning",
-        "climate",
-        "room service",
-        "24 hour",
-        "reception",
-        "quiet"
-
-    ]
-
-
-    for word in keywords:
-
-        if word in text:
-
-            score += 10
-
-
-
-    return min(
-        score,
-        100
-    )
+                return value
+    
+    return None
