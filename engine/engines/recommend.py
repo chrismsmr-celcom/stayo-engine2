@@ -1,6 +1,8 @@
+# engine/engines/recommend.py - VERSION CORRIGÉE
+
 """
 STAYO Recommendation Engine
-Orchestrateur principal - Version 3.0
+Orchestrateur principal - Version 3.1
 """
 
 import time
@@ -25,26 +27,72 @@ async def recommend(
     
     try:
         # ===== 1. Comprendre l'intention =====
-        trip = await parse_intent(query, traveler_id)
+        intent_data = await parse_intent(query, traveler_id)
         
-        # Log détaillé
-        logger.info(f"🎯 TRIP DÉTECTÉ:")
-        logger.info(f"   - Type: {trip.intent.trip_type}")
-        logger.info(f"   - Destination: {trip.intent.destination}")
-        logger.info(f"   - Budget: {trip.intent.budget}")
-        logger.info(f"   - Adultes: {trip.intent.adults}")
-        logger.info(f"   - Enfants: {trip.intent.children}")
-        logger.info(f"   - Chambres: {trip.intent.rooms}")
-        logger.info(f"   - Must have: {trip.intent.must_have}")
-        logger.info(f"   - Vibe: {trip.intent.vibe}")
+        # ✅ Si parse_intent retourne un dict, on l'utilise directement
+        if isinstance(intent_data, dict):
+            logger.info(f"🎯 INTENT DÉTECTÉ (dict):")
+            logger.info(f"   - Type: {intent_data.get('trip_type', 'leisure')}")
+            logger.info(f"   - Destination: {intent_data.get('destination', 'Paris')}")
+            logger.info(f"   - Budget: {intent_data.get('budget', 300)}")
+            logger.info(f"   - Adultes: {intent_data.get('adults', 2)}")
+            logger.info(f"   - Enfants: {intent_data.get('children', 0)}")
+            logger.info(f"   - Chambres: {intent_data.get('rooms', 1)}")
+            logger.info(f"   - Must have: {intent_data.get('must_have', [])}")
+            logger.info(f"   - Vibe: {intent_data.get('vibe', 'confort')}")
+            
+            # ===== 2. Créer l'objet Trip à partir du dict =====
+            trip = Trip()
+            trip.intent = type('Intent', (), {
+                'trip_type': intent_data.get('trip_type', 'leisure'),
+                'goal': 'hotel',
+                'must_have': intent_data.get('must_have', []),
+                'nice_to_have': intent_data.get('nice_to_have', []),
+                'avoid': intent_data.get('avoid', []),
+                'destination': intent_data.get('destination', 'Paris'),
+                'budget': intent_data.get('budget', 300)
+            })()
+            
+            trip.context = type('Context', (), {
+                'event': intent_data.get('destination', 'Paris'),
+                'event_lat': intent_data.get('lat', 48.8566),
+                'event_lng': intent_data.get('lng', 2.3522),
+                'budget': intent_data.get('budget', 300),
+                'currency': intent_data.get('currency', 'EUR'),
+                'adults': intent_data.get('adults', 2),
+                'children': intent_data.get('children', 0),
+                'checkin': intent_data.get('checkin', ''),
+                'checkout': intent_data.get('checkout', '')
+            })()
+            
+        else:
+            # Si c'est déjà un objet Trip
+            trip = intent_data
+            logger.info(f"🎯 TRIP DÉTECTÉ (objet):")
+            logger.info(f"   - Type: {trip.intent.trip_type}")
+            logger.info(f"   - Destination: {trip.intent.destination}")
+            logger.info(f"   - Budget: {trip.context.budget}")
         
-        # ===== 2. Appliquer les overrides =====
+        # ===== 3. Appliquer les overrides =====
         if overrides:
-            for key, value in overrides.items():
-                if value is not None:
-                    setattr(trip.intent, key, value) if hasattr(trip.intent, key) else None
+            if overrides.get("trip_type"):
+                trip.intent.trip_type = overrides["trip_type"]
+            if overrides.get("budget"):
+                trip.context.budget = overrides["budget"]
+            if overrides.get("currency"):
+                trip.context.currency = overrides["currency"]
+            if overrides.get("checkin"):
+                trip.context.checkin = overrides["checkin"]
+            if overrides.get("checkout"):
+                trip.context.checkout = overrides["checkout"]
+            if overrides.get("adults"):
+                trip.context.adults = overrides["adults"]
+            if overrides.get("lat"):
+                trip.context.event_lat = overrides["lat"]
+            if overrides.get("lng"):
+                trip.context.event_lng = overrides["lng"]
         
-        # ===== 3. Récupérer les hôtels =====
+        # ===== 4. Récupérer les hôtels =====
         hotels = await fetch_hotels(
             lat=trip.context.event_lat,
             lng=trip.context.event_lng,
@@ -60,25 +108,25 @@ async def recommend(
         if not hotels:
             return _empty(trip, "Aucun hôtel trouvé dans cette zone")
         
-        # ===== 4. Enrichir avec les distances =====
+        # ===== 5. Enrichir avec les distances =====
         hotels = await enrich_distances(hotels, trip)
         
-        # ===== 5. Calculer les scores =====
+        # ===== 6. Calculer les scores =====
         scored = await score_hotels(hotels, trip)
         
         if not scored:
             return _empty(trip, "Aucun hôtel disponible avec des prix dans votre budget")
         
-        # ===== 6. Sélection des recommandations avec DIVERSITÉ =====
+        # ===== 7. Sélection des recommandations avec DIVERSITÉ =====
         recommendations = _select_diverse_recommendations(scored, trip)
         
         trip.scored_hotels = scored
         trip.recommendations = recommendations
         
-        # ===== 7. Générer les explications =====
+        # ===== 8. Générer les explications =====
         trip.explanations = explain_recommendations(recommendations, trip)
         
-        # ===== 8. Suggérer des activités =====
+        # ===== 9. Suggérer des activités =====
         trip.suggested_activities = suggest_activities(trip)
         
         trip.processing_time_ms = round(
@@ -95,10 +143,7 @@ async def recommend(
 
 
 def _select_diverse_recommendations(scored: list, trip) -> list:
-    """
-    Sélectionne des recommandations DIVERSIFIÉES
-    pour éviter les répétitions
-    """
+    """Sélectionne des recommandations DIVERSIFIÉES"""
     if not scored:
         return []
     
@@ -108,47 +153,40 @@ def _select_diverse_recommendations(scored: list, trip) -> list:
     
     recommendations = []
     
-    # ===== 1. D'abord, le MEILLEUR hôtel (score le plus élevé) =====
+    # 1. Le MEILLEUR hôtel
     if scored:
         recommendations.append(scored[0])
         scored.pop(0)
     
-    # ===== 2. Ensuite, diversité par prix =====
-    # Un hôtel moins cher
+    # 2. Un hôtel moins cher
     cheap_hotels = [h for h in scored if h.get("price", 0) < budget * 0.7]
     if cheap_hotels and len(recommendations) < 5:
         recommendations.append(cheap_hotels[0])
         scored.remove(cheap_hotels[0])
     
-    # Un hôtel dans le budget
+    # 3. Un hôtel dans le budget
     mid_hotels = [h for h in scored if budget * 0.7 <= h.get("price", 0) <= budget]
     if mid_hotels and len(recommendations) < 5:
         recommendations.append(mid_hotels[0])
         scored.remove(mid_hotels[0])
     
-    # ===== 3. Diversité par distance =====
-    # Un hôtel proche (distance < 10 min)
+    # 4. Un hôtel proche
     close_hotels = [h for h in scored if h.get("distance_event_minutes", 99) < 10]
     if close_hotels and len(recommendations) < 5:
         recommendations.append(close_hotels[0])
         scored.remove(close_hotels[0])
     
-    # ===== 4. Diversité par type =====
-    # Pour les familles, proposer un appartement / résidence
+    # 5. Pour les familles : appartement
     if trip_type == "family":
-        apartment_hotels = [h for h in scored if "appart" in h.get("name", "").lower() or "suite" in h.get("name", "").lower()]
+        apartment_hotels = [h for h in scored if any(
+            word in h.get("name", "").lower() 
+            for word in ["appart", "suite", "residence", "apartment"]
+        )]
         if apartment_hotels and len(recommendations) < 5:
             recommendations.append(apartment_hotels[0])
             scored.remove(apartment_hotels[0])
     
-    # Pour les romantiques, proposer un hôtel avec spa
-    if trip_type == "romantic":
-        spa_hotels = [h for h in scored if "spa" in str(h.get("hotelFacilities", [])).lower()]
-        if spa_hotels and len(recommendations) < 5:
-            recommendations.append(spa_hotels[0])
-            scored.remove(spa_hotels[0])
-    
-    # ===== 5. Compléter avec les meilleurs restants =====
+    # Compléter avec les meilleurs restants
     while len(recommendations) < 5 and scored:
         recommendations.append(scored[0])
         scored.pop(0)
@@ -157,7 +195,7 @@ def _select_diverse_recommendations(scored: list, trip) -> list:
 
 
 def _empty(trip: Trip, message: str = "No hotel found."):
-    data = trip.to_dict()
+    data = trip.to_dict() if hasattr(trip, 'to_dict') else {}
     data["recommendations"] = []
     data["message"] = message
     return data
